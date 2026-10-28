@@ -1,0 +1,14 @@
+OpenSensor Kilo harness
+Copyright 2026 OpenSensor contributors
+
+policy.json and skills/opensensor-nono/SKILL.md are adapted from the kilo
+pack in nolabs-ai/nono-packs (Apache-2.0), inspected at commit
+3199292d2149d5c788a16a5ff1495676e58ea095:
+https://github.com/nolabs-ai/nono-packs/tree/3199292d2149d5c788a16a5ff1495676e58ea095/kilo
+
+OpenSensor changes include XDG-aware paths, dedicated Kilo state and temporary
+storage, an explicit inherited-environment allowlist, independent skill and
+profile identity, a launcher, runtime checks, and release automation.
+
+This community-maintained integration is independent of nolabs-ai and Kilo.
+Kilo and nono are separate dependencies and are not distributed in this pack.

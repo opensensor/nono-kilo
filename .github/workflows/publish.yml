@@ -1,0 +1,56 @@
+name: Publish opensensor/kilo
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-opensensor-kilo
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: test
+    if: github.repository == 'opensensor/nono-kilo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Keep this job in this workflow: the registry verifies its OIDC identity.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Validate tag and select all release artifacts
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/validate.py --tag "$RELEASE_TAG"
+          {
+            echo "version=$(jq -r .version package.json)"
+            echo "nono_version=v$(jq -r .nono versions.json)"
+            echo "files<<NONO_FILES"
+            python3 scripts/validate.py --files
+            echo "NONO_FILES"
+          } >> "$GITHUB_OUTPUT"
+      - name: Sign and publish through GitHub OIDC
+        uses: nolabs-ai/agent-sign@a3641a5e9f14fdfc7d12bacec63d5f56f4fa1749
+        with:
+          nono-version: ${{ steps.package.outputs.nono_version }}
+          publish: "true"
+          commit: "false"
+          package-name: kilo
+          package-namespace: opensensor
+          package-version: ${{ steps.package.outputs.version }}
+          package-path: .
+          registry-url: https://registry.nono.sh/api/v1
+          files: ${{ steps.package.outputs.files }}

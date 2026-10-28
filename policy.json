@@ -1,0 +1,106 @@
+{
+  "extends": "default",
+  "meta": {
+    "name": "opensensor-kilo",
+    "version": "0.1.0",
+    "description": "OpenSensor-maintained Kilo CLI sandbox",
+    "author": "OpenSensor"
+  },
+  "groups": {
+    "include": [
+      "node_runtime",
+      "bun_runtime",
+      "rust_runtime",
+      "python_runtime",
+      {
+        "name": "linux_sysfs_read",
+        "when": "linux"
+      },
+      "nix_runtime",
+      "git_config",
+      "unlink_protection"
+    ]
+  },
+  "security": {
+    "signal_mode": "isolated",
+    "capability_elevation": false
+  },
+  "filesystem": {
+    "allow": [
+      "$XDG_CONFIG_HOME/kilo",
+      "$XDG_DATA_HOME/kilo",
+      "$XDG_STATE_HOME/opensensor-kilo",
+      "$XDG_CACHE_HOME/kilo",
+      "$NONO_CONFIG/profile-drafts"
+    ],
+    "read": [
+      "$NONO_PACKAGES",
+      "$NONO_CONFIG/profiles",
+      "$HOME/.kilo/bin"
+    ]
+  },
+  "network": {
+    "block": false
+  },
+  "workdir": {
+    "access": "readwrite"
+  },
+  "open_urls": {
+    "allow_origins": [],
+    "allow_localhost": true
+  },
+  "allow_launch_services": false,
+  "rollback": {
+    "exclude_patterns": [
+      "node_modules",
+      ".next",
+      "__pycache__",
+      "target",
+      ".kilo"
+    ],
+    "exclude_globs": [
+      "*.tmp.[0-9]*.[0-9]*"
+    ]
+  },
+  "environment": {
+    "allow_vars": [
+      "PATH",
+      "HOME",
+      "USER",
+      "LOGNAME",
+      "SHELL",
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_*",
+      "TZ",
+      "TMPDIR",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_STATE_HOME",
+      "XDG_CACHE_HOME",
+      "KILO_*",
+      "KILOCODE_*",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+      "NODE_EXTRA_CA_CERTS",
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "https_proxy",
+      "http_proxy",
+      "all_proxy",
+      "no_proxy",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "OPENROUTER_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY"
+    ],
+    "set_vars": {
+      "XDG_STATE_HOME": "$XDG_STATE_HOME/opensensor-kilo",
+      "TMPDIR": "$XDG_CACHE_HOME/kilo/tmp"
+    }
+  }
+}

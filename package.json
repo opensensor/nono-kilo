@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "kilo",
+  "version": "0.1.0",
+  "description": "OpenSensor-maintained Kilo CLI harness: nono sandbox profile, isolated UI state and temporary files, environment filtering, and sandbox guidance.",
+  "license": "Apache-2.0",
+  "platforms": ["linux", "macos"],
+  "min_nono_version": "0.80.0",
+  "keywords": ["kilo", "kilocode", "opensensor", "sandbox", "harness"],
+  "artifacts": [
+    { "type": "profile", "path": "policy.json", "install_as": "kilo" },
+    { "type": "plugin", "path": "README.md" },
+    { "type": "plugin", "path": "LICENSE" },
+    { "type": "plugin", "path": "NOTICE" },
+    { "type": "plugin", "path": "bin/nono-kilo.sh" },
+    { "type": "plugin", "path": "skills/opensensor-nono/SKILL.md" },
+    { "type": "plugin", "path": "wiring/directory-marker" }
+  ],
+  "wiring": [
+    { "type": "write_file", "source": "bin/nono-kilo.sh", "dest": "$HOME/.local/bin/nono-kilo" },
+    { "type": "write_file", "source": "skills/opensensor-nono/SKILL.md", "dest": "$XDG_CONFIG_HOME/kilo/skills/opensensor-nono/SKILL.md" },
+    { "type": "write_file", "source": "wiring/directory-marker", "dest": "$NONO_CONFIG/profile-drafts/.opensensor-kilo-pack" }
+  ]
+}
