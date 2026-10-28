@@ -142,9 +142,28 @@ test('project providers use trusted runtime configuration with references only',
 test('browser authentication rejects forged, expired and malformed cookies', async t => {
   const f = await fixture(t); const auth = createAuth(f.stateDir);
   const key = JSON.parse(await fs.readFile(path.join(f.stateDir, 'browser-access.json'))).key;
+  assert.match(key, /^[a-f0-9]{64}$/);
   assert.throws(() => auth.login('wrong'), /Invalid/);
   const cookie = auth.login(key).split(';')[0]; assert.equal(auth.check({ headers: { cookie } }), true);
   assert.equal(auth.check({ headers: { cookie: cookie + 'x' } }), false);
   assert.equal(auth.check({ headers: { cookie: 'opensensor_session=a.b.c' } }), false);
   assert.equal(auth.check({ headers: {} }), false);
+});
+
+test('locally configured unlock keys persist and rotating them invalidates old cookies', async t => {
+  const f = await fixture(t), file = path.join(f.stateDir, 'browser-access.json');
+  const original = createAuth(f.stateDir), config = JSON.parse(await fs.readFile(file));
+  const previousCookie = original.login(config.key).split(';')[0];
+  await fs.writeFile(file, JSON.stringify({ ...config, key: 'test' }));
+  const auth = createAuth(f.stateDir);
+  const cookie = auth.login('test').split(';')[0];
+  assert.equal(createAuth(f.stateDir).check({ headers: { cookie } }), true);
+  assert.equal(auth.check({ headers: { cookie: previousCookie } }), false);
+  assert.equal(auth.check({ headers: { cookie: cookie + 'x' } }), false);
+  assert.throws(() => auth.login(config.key), /Invalid/);
+  assert.throws(() => auth.login(''), /Invalid/);
+  for (const key of ['', '   ', 'test\n', null, 123, 'x'.repeat(257)]) {
+    await fs.writeFile(file, JSON.stringify({ ...config, key }));
+    assert.throws(() => createAuth(f.stateDir), /Invalid/);
+  }
 });
