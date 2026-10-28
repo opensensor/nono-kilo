@@ -181,7 +181,7 @@ $('download-log').addEventListener('click', async () => {
 function renderModels() {
   const previous = $('model').value, query = $('model-search').value.toLowerCase();
   const groups = new Map(); $('model').replaceChildren(new Option('Kilo · free router', state.defaultModel || 'kilo/kilo-auto/free'));
-  if (state.policyProject === state.project && state.policy?.settings.provider.enabled) $('model').append(new Option(`Project provider · ${state.policy.settings.defaultModel}`, state.policy.settings.defaultModel));
+  if (state.policyProject === state.project && state.policy?.settings?.provider?.enabled) $('model').append(new Option(`Project provider · ${state.policy.settings.defaultModel}`, state.policy.settings.defaultModel));
   for (const model of state.models || []) {
     if (model.id === state.defaultModel) continue;
     if (query && !`${model.id} ${model.name} ${model.providerName}`.toLowerCase().includes(query) && model.id !== previous) continue;
