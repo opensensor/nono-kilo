@@ -17,7 +17,9 @@ test('project grants reject the workspace root, traversal, files and escaping sy
   await fs.symlink(path.join(temp, 'outside'), path.join(workspace, 'escape'));
   await fs.writeFile(path.join(project, 'file.txt'), 'fixture');
   assert.equal(await validateProject('project', workspace), project);
+  assert.equal(await validateProject(path.join(temp, 'outside'), workspace), path.join(temp, 'outside'));
   for (const input of ['.', '..', '../outside', 'escape', 'project/file.txt']) await assert.rejects(validateProject(input, workspace));
+  for (const input of ['/', '/proc', '/run/user', os.homedir()]) await assert.rejects(validateProject(input, workspace));
 });
 
 test('task text is a literal argument and tool auto approval is opt-in', () => {

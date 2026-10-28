@@ -12,6 +12,7 @@ import { createAuth } from './lib/auth.mjs';
 import { createSecretStore } from './lib/secrets.mjs';
 import { createPolicyStore, validateModel, defaults } from './lib/policy.mjs';
 import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
+import { validateProject, projectMetadata } from './lib/projects.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -20,21 +21,7 @@ const FREE_MODEL = 'kilo/kilo-auto/free';
 const MAX_LOG = 1024 * 1024;
 const activeStatus = status => ['starting', 'running', 'stopping'].includes(status);
 
-export { RequestError };
-
-export async function validateProject(input, workspace) {
-  if (typeof input !== 'string' || !input.trim() || input.includes('\0')) throw new RequestError('Choose a project directory.');
-  let resolved;
-  try { resolved = await fs.realpath(path.resolve(workspace, input)); }
-  catch { throw new RequestError('That project directory does not exist.'); }
-  const base = await fs.realpath(workspace);
-  const relative = path.relative(base, resolved);
-  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || relative.split(path.sep).includes('.git')) {
-    throw new RequestError('Choose an individual project inside the workspace, not the workspace root.');
-  }
-  if (!(await fs.stat(resolved)).isDirectory()) throw new RequestError('The project must be a directory.');
-  return resolved;
-}
+export { RequestError, validateProject };
 
 export function buildRunArgs({ name, prompt, model, autoApprove = false, profileName = PROFILE, settings }, kilo) {
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw new RequestError('Enter a task of 1–12,000 characters.');
@@ -106,12 +93,13 @@ export function createDashboard(options = {}) {
       const candidate = path.join(workspace, entry.name);
       if (existsSync(path.join(candidate, '.git')) || entry.name === 'nono-kilo-demo') discovered.push(candidate);
     }
-    const entries = [...new Set([...discovered, ...readJSON(projectsFile, [])])];
+    const registered = readJSON(projectsFile, []);
+    const entries = [...new Set([...discovered, ...registered])];
     const valid = await Promise.all(entries.map(async candidate => {
       try {
         const real = await projectPath(candidate);
-        return { path: real, name: path.basename(real), relative: path.relative(workspace, real), demo: path.basename(real) === 'nono-kilo-demo' };
-      } catch { return null; }
+        return projectMetadata(real, workspace);
+      } catch { return registered.includes(candidate) ? projectMetadata(candidate, workspace, false) : null; }
     }));
     return valid.filter(Boolean).sort((a, b) => Number(b.demo) - Number(a.demo) || a.name.localeCompare(b.name));
   }
