@@ -16,6 +16,7 @@ import { validateProject, projectMetadata } from './lib/projects.mjs';
 import { TerminalHub, terminalSize } from './lib/terminal.mjs';
 import pty from 'node-pty';
 import { createModelCatalog } from './lib/models.mjs';
+import { NetworkMonitor } from './lib/network.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +60,7 @@ export function createDashboard(options = {}) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const auth = createAuth(stateDir);
   const secrets = createSecretStore(stateDir, options.keyringCall);
-  const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, secretStore: secrets, home: options.home });
+  const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, kilo, secretStore: secrets, home: options.home });
   const sandboxPath = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter).filter(dir => !policies.protectedRoots.some(root => inside(root, path.resolve(dir)))).join(path.delimiter);
   const auditFile = path.join(stateDir, 'audit.json');
   const audit = (event, metadata = {}) => atomicJSON(auditFile, [...readJSON(auditFile, []), { at: new Date().toISOString(), event, ...metadata }].slice(-500));
@@ -84,6 +85,7 @@ export function createDashboard(options = {}) {
   const logPath = id => path.join(stateDir, `${id}.log`);
   const runCommand = (command, args, extra = {}) => execute(command, args, { timeout: 12000, maxBuffer: 1024 * 1024, ...extra });
   const modelCatalog = createModelCatalog({ configDir, stateDir, kilo, execute, cwd: ROOT });
+  const network = new NetworkMonitor(stateDir, options.home);
   const terminals = new TerminalHub({ getSession: findSession, audit,
     loadArchive: async record => {
       const screen = readJSON(path.join(stateDir, `${record.id}.screen.json`), null); if (screen) return screen;
@@ -191,7 +193,7 @@ export function createDashboard(options = {}) {
     }
     const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · boundary test' : model,
       prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt?.trim() || 'Interactive Kilo session', redactions), kind: check ? 'check' : 'task',
-      interactive, cols: size.cols, rows: size.rows,
+      interactive, cols: size.cols, rows: size.rows, networkTrace: true,
       autoApprove: !check && autoApprove, status: 'starting', startedAt: new Date().toISOString(), logBytes: 0,
       policyRevision: policy.revision, profileName: policy.profileName, policy: policy.profile, settings: policy.settings,
       secretVersions: policy.settings.secrets.map(b => { const s = metadata.find(s => s.id === b.secretId); return { name: s.name, version: s.version, env: b.env, mode: b.mode }; }) };
@@ -199,7 +201,11 @@ export function createDashboard(options = {}) {
     terminals.create(record, size);
     persist();
     audit('session.started', { project, session: id, revision: policy.revision });
-    const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
+    // A supervisor-owned trace gives the network view live proxy decisions.
+    // Keep it separate from the PTY, so logs never corrupt Kilo's TUI.
+    await fs.writeFile(network.logPath(id), '', { mode: 0o600 });
+    args.unshift('--log-file', network.logPath(id));
+    const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, RUST_LOG: 'off,nono_proxy::audit=info', OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
       ...(interactive ? { TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'OpenSensor' } : {}) };
     const stdout = new RedactingStream(redactions, data => append(record, data));
     const stderr = new RedactingStream(redactions, data => append(record, data));
@@ -229,6 +235,7 @@ export function createDashboard(options = {}) {
         terminals.attachProcess(id, { pause: () => { child.stdout.pause(); child.stderr.pause(); }, resume: () => { child.stdout.resume(); child.stderr.resume(); } });
       }
       child.done = done; children.set(id, child);
+      network.track(record, child.pid).catch(() => {});
       record.status = 'running'; persist(); cache.at = 0; terminals.status(id);
       deadline = setTimeout(() => {
         record.timedOut = true; append(record, '\n[Dashboard time limit reached. Stopping session.]\n');
@@ -319,11 +326,12 @@ export function createDashboard(options = {}) {
       }));
       if (req.method === 'POST' && url.pathname === '/api/project-settings/validate') return json(200, await policies.preview(await projectPath(body.project), body.settings));
       if (req.method === 'POST' && url.pathname === '/api/project-command') {
-        const project = await projectPath(body.project); const policy = await policies.launch(project);
+        const project = await projectPath(body.project);
         const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
-        return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, nono, ...sandboxArgs(`kilo-terminal-${randomUUID().slice(0, 8)}`, policy.profileName, policy.settings), '--', kilo, '--model', policy.settings.defaultModel].map(quote).join(' ')}`, note: 'Terminal sessions use this policy snapshot. The dashboard time limit and captured-log masking apply only to dashboard-launched sessions.' });
+        return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, `OPENSENSOR_WORKSPACE=${workspace}`, `OPENSENSOR_DASHBOARD_STATE=${stateDir}`, `XDG_CONFIG_HOME=${configDir}`, `OPENSENSOR_NONO=${nono}`, `OPENSENSOR_KILO=${kilo}`, process.execPath, path.join(ROOT, 'scripts/run-project.mjs'), project].map(quote).join(' ')}`, note: 'Loads the latest saved project policy and resolves its bound keyring credentials at launch. Dashboard time limits and captured-log masking apply only to dashboard-launched sessions.' });
       }
       if (req.method === 'GET' && url.pathname === '/api/secrets') return json(200, { status: await secrets.status(), secrets: secrets.list().map(s => ({ ...s, projects: policies.bindings(s.id) })) });
+      if (req.method === 'GET' && url.pathname === '/api/git-context') return json(200, await policies.gitContext(await projectPath(url.searchParams.get('project'))));
       if (req.method === 'POST' && url.pathname === '/api/secrets') return json(201, await mutate(async () => { const s = await secrets.save(body); audit(body.id ? 'secret.rotated' : 'secret.created', { id: s.id, name: s.name, version: s.version }); return s; }));
       const secretMatch = url.pathname.match(/^\/api\/secrets\/([a-f0-9]{32})\/(enabled|delete)$/);
       if (req.method === 'POST' && secretMatch) return json(200, await mutate(async () => {
@@ -344,10 +352,11 @@ export function createDashboard(options = {}) {
         writeFileSync(projectsFile, JSON.stringify([...new Set([...readJSON(projectsFile, []), project])]), { mode: 0o600 });
         return json(200, await projects());
       }
-      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff|log))?$/);
+      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff|log|network))?$/);
       if (match) {
         if (req.method === 'POST' && match[2] === 'stop') return json(200, await stop(match[1]));
         if (req.method === 'GET' && match[2] === 'diff') return json(200, await diff(match[1]));
+        if (req.method === 'GET' && match[2] === 'network') return json(200, await network.snapshot(await findSession(match[1])));
         if (req.method === 'GET' && match[2] === 'log') {
           const record = await findSession(match[1]); let output = 'No captured transcript.';
           if (!record.external) { try { output = await fs.readFile(logPath(record.id), 'utf8'); } catch {} }
@@ -360,7 +369,7 @@ export function createDashboard(options = {}) {
         res.writeHead(200, { ...headers, 'Content-Type': url.pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         return res.end(await fs.readFile(path.join(ROOT, 'node_modules', VENDOR_FILES[url.pathname])));
       }
-      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/terminal.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
+      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/terminal.js', '/network.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
         const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const types = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' };
         res.writeHead(200, { ...headers, 'Content-Type': types[name.split('.').at(-1)] });
@@ -378,7 +387,7 @@ export function createDashboard(options = {}) {
     await drain(3000);
     for (const child of children.values()) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
     await drain(1000);
-    await terminals.flush(); terminals.close();
+    await terminals.flush(); terminals.close(); await network.close();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   };

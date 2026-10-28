@@ -66,6 +66,10 @@ test('HTTP origin guards, process lifecycle and captured output', async t => {
   const cookie = authenticated.headers.get('set-cookie');
   assert.match(cookie, /HttpOnly; SameSite=Strict/);
   headers.Cookie = cookie.split(';')[0];
+  const launchCommand = await (await request('/api/project-command', { method: 'POST', headers, body: JSON.stringify({ project }) })).json();
+  assert.match(launchCommand.command, /scripts\/run-project\.mjs/);
+  assert.equal(launchCommand.command.includes(key), false);
+  assert.match(launchCommand.note, /latest saved project policy/);
   assert.equal((await request('/api/sessions', { method: 'POST', headers, body: JSON.stringify({ project: workspace, prompt: 'test', model: 'kilo/test' }) })).status, 400);
   const started = await request('/api/sessions', { method: 'POST', headers, body });
   assert.equal(started.status, 201);

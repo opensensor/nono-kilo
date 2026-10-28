@@ -34,6 +34,7 @@ try {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'demo', choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
     res.write(chunk({ role: 'assistant' }));
+    res.write(chunk({ reasoning_content: 'Thinking interaction check: this is a disposable local model response. No external model is called.' }));
     for (const word of reply.split(' ')) { if (res.destroyed) break; res.write(chunk({ content: word + ' ' })); await pause(25); }
     res.end(chunk({}, 'stop') + 'data: [DONE]\n\n');
   });
@@ -68,6 +69,8 @@ try {
   await until(() => requests.some(r => JSON.stringify(r.messages?.filter(m => m.role === 'user')).includes('SECOND_STEERING_CHECK')), 'second instruction reaches local model');
   await until(() => screen().includes('SECOND_STEERING_CHECK'), 'second instruction appears in terminal');
   console.log('PASS live steering reaches a second model turn without restarting the sandbox');
+  await until(async () => (await api(`/api/sessions/${record.id}/network`)).totals.responses >= 2, 'live proxy network observations');
+  console.log('PASS network view records live model responses');
   const log = await fs.readFile(path.join(stateDir, `${record.id}.log`), 'utf8'); assert.equal(log.includes(value), false);
   ws.close(); clientTerm.dispose(); clientTerm = null;
   if (preview) {

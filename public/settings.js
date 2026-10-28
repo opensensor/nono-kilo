@@ -55,6 +55,11 @@ function fillSettings(s) {
   $('s-provider-enabled').checked = p.enabled; $('s-provider-id').value = p.id; $('s-provider-model').value = p.model;
   $('s-provider-url').value = p.baseURL; $('s-provider-secret').value = p.secretEnv; $('s-provider-route').value = p.proxyRoute;
   $('s-provider-context').value = p.context; $('s-provider-output').value = p.output;
+  const g = { ...state.defaults.git, ...s.git };
+  $('s-git-enabled').checked = g.enabled; $('s-git-local').value = g.local;
+  for (const [id, key] of [['system','systemConfig'],['global','globalConfig'],['fetch','fetch'],['push','push']]) $(`s-git-${id}`).checked = g[key];
+  for (const [id, key] of [['name','authorName'],['email','authorEmail'],['remote','remote'],['auth','authentication'],['key','privateKey'],['hosts','knownHosts'],['agent','agentSocket']]) $(`s-git-${id}`).value = g[key];
+  $('s-git-branches').value = g.branches.join('\n');
   $('s-access').value = s.projectAccess; $('grants-list').replaceChildren(); s.extraPaths.forEach(addGrant);
   $('s-deny').value = s.denyPaths.join('\n'); document.querySelectorAll('[name=runtime]').forEach(c => { c.checked = s.runtimes.includes(c.value); });
   $('s-network').value = s.network.mode; $('s-domains').value = s.network.allowDomains.join('\n'); $('s-deny-domains').value = s.network.denyDomains.join('\n');
@@ -78,11 +83,18 @@ function captureSettings() {
     extraPaths: [...$('grants-list').children].map(row => ({ path: row.querySelector('input').value.trim(), access: row.querySelector('select').value })), denyPaths: lines($('s-deny').value), runtimes: [...document.querySelectorAll('[name=runtime]:checked')].map(c => c.value),
     network: { mode: $('s-network').value, allowDomains: lines($('s-domains').value), denyDomains: lines($('s-deny-domains').value), connectPorts: ports($('s-connect').value), listenPorts: ports($('s-listen').value) },
     environment: { inherit: lines($('s-inherit').value), variables }, secrets: bindings,
+    git: { enabled: $('s-git-enabled').checked, local: $('s-git-local').value, systemConfig: $('s-git-system').checked, globalConfig: $('s-git-global').checked,
+      authorName: $('s-git-name').value.trim(), authorEmail: $('s-git-email').value.trim(), fetch: $('s-git-fetch').checked, push: $('s-git-push').checked,
+      remote: $('s-git-remote').value.trim(), branches: lines($('s-git-branches').value), authentication: $('s-git-auth').value,
+      privateKey: $('s-git-key').value.trim(), knownHosts: $('s-git-hosts').value.trim(), agentSocket: $('s-git-agent').value.trim() },
     provider: { enabled: $('s-provider-enabled').checked, id: $('s-provider-id').value.trim(), model: $('s-provider-model').value.trim(), baseURL: $('s-provider-url').value.trim(), secretEnv: $('s-provider-secret').value.trim(), proxyRoute: $('s-provider-route').value.trim(), context: Number($('s-provider-context').value), output: Number($('s-provider-output').value) },
     limits: { timeoutMinutes: Number($('s-timeout').value), memoryMB: Number($('s-memory').value), maxProcesses: Number($('s-processes').value) }, allowGpu: $('s-gpu').checked,
     rollback: { enabled: $('s-rollback').checked, exclude: lines($('s-exclude').value) } };
 }
 function conditionalFields() {
+  $('git-fields').hidden = !$('s-git-enabled').checked;
+  document.querySelector('[name=runtime][value=git]').disabled = $('s-git-enabled').checked;
+  $('git-key-field').hidden = $('s-git-auth').value !== 'key'; $('git-agent-field').hidden = $('s-git-auth').value !== 'agent';
   const provider = $('s-provider-enabled').checked;
   $('provider-fields').hidden = !provider; $('provider-direct').hidden = Boolean($('s-provider-route').value.trim()); $('s-model').disabled = provider;
   if (provider && $('s-provider-id').value && $('s-provider-model').value) $('s-model').value = `${$('s-provider-id').value.trim()}/${$('s-provider-model').value.trim()}`;
@@ -136,7 +148,7 @@ function openSecret(secret) {
 document.querySelectorAll('[data-settings-tab]').forEach(button => button.onclick = () => settingsTab(button.dataset.settingsTab));
 $('settings-form').addEventListener('input', dirty); $('settings-form').addEventListener('change', dirty);
 $('s-network').addEventListener('change', conditionalFields); $('s-storage').addEventListener('change', conditionalFields);
-for (const id of ['s-provider-enabled', 's-provider-id', 's-provider-model', 's-provider-route']) $(id).addEventListener('input', conditionalFields);
+for (const id of ['s-git-enabled', 's-git-auth', 's-provider-enabled', 's-provider-id', 's-provider-model', 's-provider-route']) $(id).addEventListener('input', conditionalFields);
 $('add-grant').onclick = () => { addGrant(); dirty(); };
 $('add-binding').onclick = () => { if (!state.vault.length) return toast('Add a stored secret in Secrets, then bind it here.', true); addBinding(); dirty(); };
 $('secrets-nav').onclick = () => showPage('secrets'); $('manage-secrets').onclick = () => showPage('secrets'); $('refresh-vault').onclick = () => refreshVault().catch(e => toast(e.message, true));
@@ -172,3 +184,12 @@ $('export-policy').onclick = () => {
 };
 $('restore-policy').onclick = () => { const previous = state.policy.history.find(r => r.revision === Number($('policy-history').value)); if (previous) { fillSettings(previous.settings); dirty(); toast(`Revision ${previous.revision} loaded as a draft. Save to create a new revision.`); } };
 window.addEventListener('beforeunload', event => { if (state.settingsDirty) { event.preventDefault(); event.returnValue = ''; } });
+
+$('import-git-context').onclick = async () => {
+  const project = state.project; $('import-git-context').disabled = true;
+  try {
+    const g = await api(`/api/git-context?project=${encodeURIComponent(project)}`); if (project !== state.project) return;
+    for (const [id, key] of [['name','authorName'],['email','authorEmail'],['remote','remote'],['hosts','knownHosts'],['agent','agentSocket']]) if (g[key]) $(`s-git-${id}`).value = g[key];
+    dirty(); toast('Git identity and origin copied into the draft. Review and save to apply.');
+  } catch (error) { settingsError(error.message); } finally { $('import-git-context').disabled = false; }
+};

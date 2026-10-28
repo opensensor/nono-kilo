@@ -8,7 +8,7 @@
   <script src="/vendor/xterm.js" defer></script><script src="/vendor/fit.js" defer></script><script src="/vendor/search.js" defer></script><script src="/vendor/webgl.js" defer></script><script src="/vendor/web-links.js" defer></script>
   <script src="/terminal.js" defer></script>
   <script src="/app.js" defer></script>
-  <script src="/settings.js" defer></script>
+  <script src="/settings.js" defer></script><script src="/network.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -23,7 +23,7 @@
     <div class="sidebar-footer"><span class="online-dot" id="connection-dot"></span><div id="connection-label">Connecting locally…<small>127.0.0.1 · stays on this machine</small><button id="lock-dashboard" type="button" class="text-button">Lock this browser</button></div></div>
   </aside>
   <main>
-    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><span class="local-pill"><span class="online-dot"></span> LOCAL ONLY</span></header>
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><button class="text-button focus-exit" id="exit-focus">Exit focus view</button><span class="local-pill"><span class="online-dot"></span> LOCAL ONLY</span></header>
     <div class="content" id="workspace-content">
       <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Kilo, within bounds.</h1><p>Choose a project. Give Kilo a task. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
       <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>
@@ -56,7 +56,7 @@
             <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Start a session to see live output, inspect changes,<br>and keep track of what Kilo is doing.</p></div>
             <div id="session-content" hidden>
               <div class="session-heading"><div><div class="session-title" id="session-title"></div><div class="session-subtitle" id="session-subtitle"></div></div><button class="button danger" id="stop-session" hidden>■ &nbsp; Stop</button></div>
-              <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Terminal</button><button role="tab" aria-selected="false" data-tab="transcript">Transcript</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download the full captured transcript">↓ Log</button></div>
+              <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Terminal</button><button role="tab" aria-selected="false" data-tab="transcript">Transcript</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="network">Network</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download the full captured transcript">↓ Log</button></div>
               <div id="output-panel" class="terminal-panel">
                 <div class="terminal-toolbar"><div class="terminal-connection"><span class="online-dot" id="terminal-dot"></span><strong id="terminal-status">Connecting…</strong><span id="terminal-latency"></span></div><div class="terminal-actions"><button id="terminal-focus" aria-pressed="false" title="Fill the app while keeping browser tabs and session tabs">↗ Focus view</button><button id="terminal-select" title="Open terminal text for selection and copying">Select text</button><button id="terminal-copy" title="Copy selected text, or the visible screen. Shift+drag selects text in the terminal.">Copy</button><button id="terminal-paste" title="Paste clipboard into the terminal">Paste</button><button id="terminal-smaller" aria-label="Smaller terminal font">A−</button><button id="terminal-larger" aria-label="Larger terminal font">A+</button><button id="terminal-bottom" title="Scroll to the live screen">↓ Live</button><button id="terminal-fullscreen" title="Expand terminal to full screen">⛶ Full screen</button></div></div>
                 <div class="terminal-search-row"><label for="terminal-search">Find</label><input type="search" id="terminal-search" placeholder="Search terminal scrollback"><button id="terminal-previous" aria-label="Previous terminal match">↑</button><button id="terminal-next" aria-label="Next terminal match">↓</button><span id="terminal-matches"></span><button id="terminal-reconnect">↻ Reconnect</button></div>
@@ -67,6 +67,15 @@
               </div>
               <div class="output-wrap" id="transcript-panel" hidden><pre id="output" tabindex="0" aria-label="Session transcript"></pre><div class="waiting" id="waiting" hidden><span class="online-dot"></span> Session is running</div></div>
               <div id="diff-panel" class="diff-panel" hidden><p id="diff-note" class="info-note"></p><pre id="git-status"></pre><pre id="diff-output" tabindex="0"></pre></div>
+              <div id="network-panel" class="network-panel" hidden>
+                <div class="network-heading"><div><div class="eyebrow">AGENT RUNTIME</div><h2>Network activity</h2></div><span id="network-live" class="network-live">Loading…</span><button id="network-pause" class="button secondary">Pause view</button><button id="network-export" class="button secondary">Export</button></div>
+                <div class="network-metrics" id="network-metrics"></div>
+                <div class="network-controls"><label class="sr-only" for="network-search">Filter network destinations</label><input id="network-search" type="search" placeholder="Filter destinations…"><label class="sr-only" for="network-filter">Network event type</label><select id="network-filter"><option value="all">All activity</option><option value="deny">Blocked decisions</option><option value="allow">Allowed decisions</option><option value="response">HTTP responses</option></select><button id="network-clear" class="text-button" hidden>Clear selection</button></div>
+                <div class="network-map"><div class="network-graph-wrap"><svg id="network-graph" role="group" aria-label="Agent connections to network destinations" viewBox="0 0 800 360"></svg><div class="network-legend"><span>● Observed socket</span><span class="net-allow">● Proxy allowed</span><span class="net-deny">● Proxy blocked</span></div></div><div id="network-destinations" class="network-destinations" aria-label="Network destinations"></div></div>
+                <div class="network-timeline"><div><strong>Active connections</strong><span id="network-timeline-note">Sampled every 2 seconds</span></div><svg id="network-timeline" role="img" aria-label="Active connection timeline" viewBox="0 0 900 75"></svg></div>
+                <p class="network-coverage" id="network-coverage" role="status"></p>
+                <div class="network-events"><table><caption>Recent proxy events <span id="network-event-count"></span></caption><thead><tr><th>Time</th><th>Destination</th><th>Activity</th><th>Method / transport</th><th>HTTP status</th></tr></thead><tbody id="network-event-rows"></tbody></table><p id="network-empty-events" class="empty-list"></p></div>
+              </div>
               <div id="details-panel" class="details-panel" hidden></div>
             </div>
           </div>
@@ -80,11 +89,12 @@
         <nav class="settings-nav" aria-label="Settings sections">
           <button type="button" data-settings-tab="general" class="active">01 <span>General</span></button>
           <button type="button" data-settings-tab="files">02 <span>Files & runtimes</span></button>
-          <button type="button" data-settings-tab="network">03 <span>Network</span></button>
-          <button type="button" data-settings-tab="environment">04 <span>Environment</span></button>
-          <button type="button" data-settings-tab="bindings">05 <span>Secret bindings</span></button>
-          <button type="button" data-settings-tab="limits">06 <span>Limits & recovery</span></button>
-          <button type="button" data-settings-tab="preview">07 <span>Policy & history</span></button>
+          <button type="button" data-settings-tab="git">03 <span>Git permissions</span></button>
+          <button type="button" data-settings-tab="network">04 <span>Network</span></button>
+          <button type="button" data-settings-tab="environment">05 <span>Environment</span></button>
+          <button type="button" data-settings-tab="bindings">06 <span>Secret bindings</span></button>
+          <button type="button" data-settings-tab="limits">07 <span>Limits & recovery</span></button>
+          <button type="button" data-settings-tab="preview">08 <span>Policy & history</span></button>
           <p>Saved changes apply to new sessions. Running sessions keep their original policy.</p>
         </nav>
         <form id="settings-form" class="card settings-card" novalidate>
@@ -110,13 +120,35 @@
             <p class="field-help">Only the selected project is granted. System files and selected runtimes remain readable.</p>
             <div class="field-heading"><label>Additional path grants</label><button type="button" class="text-button" id="add-grant">+ Add path</button></div><div id="grants-list"></div><p class="field-help">Existing absolute paths or paths relative to this project. Dashboard controls and host credential stores cannot be granted.</p>
             <label for="s-deny">Deny paths within this project</label><textarea id="s-deny" class="compact-textarea" placeholder=".env&#10;credentials.json"></textarea><p class="field-help">One existing path per line. On Linux, deny rules cover paths present at launch; keep future secrets outside the project.</p>
-            <label>Developer runtimes</label><div class="runtime-options"><label class="checkbox-row"><input type="checkbox" checked disabled>Node.js · required for Kilo</label><label class="checkbox-row"><input type="checkbox" value="python" name="runtime">Python</label><label class="checkbox-row"><input type="checkbox" value="bun" name="runtime">Bun</label><label class="checkbox-row"><input type="checkbox" value="rust" name="runtime">Rust</label><label class="checkbox-row"><input type="checkbox" value="nix" name="runtime">Nix</label><label class="checkbox-row"><input type="checkbox" value="git" name="runtime">Git configuration</label></div>
+            <label>Developer runtimes</label><div class="runtime-options"><label class="checkbox-row"><input type="checkbox" checked disabled>Node.js · required for Kilo</label><label class="checkbox-row"><input type="checkbox" value="python" name="runtime">Python</label><label class="checkbox-row"><input type="checkbox" value="bun" name="runtime">Bun</label><label class="checkbox-row"><input type="checkbox" value="rust" name="runtime">Rust</label><label class="checkbox-row"><input type="checkbox" value="nix" name="runtime">Nix</label><label class="checkbox-row"><input type="checkbox" value="git" name="runtime">Legacy Git configuration · used only when managed Git is off</label></div>
+          </section>
+          <section data-settings-panel="git" hidden>
+            <div class="card-heading"><h2>Git permissions</h2><button type="button" class="text-button" id="import-git-context">Import identity & origin</button></div>
+            <p class="settings-intro">Control Git commands independently from the agent’s files and network. Changes apply to new sessions.</p>
+            <label class="checkbox-row"><input id="s-git-enabled" type="checkbox"><span>Manage Git commands through nono<small>Unlisted commands and remote operations are denied by default.</small></span></label>
+            <div id="git-fields">
+              <label for="s-git-local">Local Git commands</label><select id="s-git-local"><option value="read">Inspect only · status, diff, log and repository queries</option><option value="write">Local changes · staging, commits, branches and history edits</option></select>
+              <div class="notice">These controls govern Git commands. A writable project still permits direct edits to .git files. Use read-only project access to prevent direct file changes. Hooks, signing and credential helpers are disabled in managed Git.</div>
+              <div class="field-grid"><div><label for="s-git-name">Commit author name</label><input id="s-git-name" placeholder="Your name" maxlength="200"></div><div><label for="s-git-email">Commit author email</label><input id="s-git-email" type="email" placeholder="you@example.com" maxlength="200"></div></div>
+              <p class="field-help">Import copies only your name, email and SSH origin into this draft. No credentials are copied and no settings are saved automatically.</p>
+              <label class="checkbox-row"><input id="s-git-system" type="checkbox"><span>Read /etc/gitconfig in Git commands</span></label>
+              <label class="checkbox-row"><input id="s-git-global" type="checkbox"><span>Read ~/.gitconfig in Git commands<small>Includes are not granted automatically. You can leave this off and set your identity above.</small></span></label>
+              <label for="s-git-remote">Allowed origin · exact SSH repository</label><input id="s-git-remote" placeholder="git@github.com:opensensor/project.git">
+              <label class="checkbox-row"><input id="s-git-fetch" type="checkbox"><span>Fetch and list refs from this origin<small>Fetching updates local Git metadata. Use git fetch origin; merge separately if local changes are enabled.</small></span></label>
+              <label class="checkbox-row"><input id="s-git-push" type="checkbox"><span>Push to selected branches on this origin<small>Force pushes, branch deletion, additional arguments and other destinations are denied.</small></span></label>
+              <label for="s-git-branches">Allowed push branches</label><textarea id="s-git-branches" class="compact-textarea" placeholder="main"></textarea><p class="field-help">One literal branch per line. Example: git push origin HEAD:main. Unqualified git push is denied.</p>
+              <label for="s-git-auth">SSH authentication</label><select id="s-git-auth"><option value="none">None · remote access disabled</option><option value="agent">Existing SSH agent · keys stay in the agent</option><option value="key">One private key file · preferably a repository deploy key</option></select>
+              <div id="git-key-field"><label for="s-git-key">Private key file</label><input id="s-git-key" placeholder="/home/you/.ssh/project_deploy_key"><p class="field-help">The exact file is readable only by the Git SSH transport. Encrypted keys require the SSH agent option.</p></div>
+              <div id="git-agent-field"><label for="s-git-agent">SSH agent socket</label><input id="s-git-agent" placeholder="Import your existing agent socket, or enter its absolute path"></div>
+              <label for="s-git-hosts">Known hosts file</label><input id="s-git-hosts" placeholder="/home/you/.ssh/known_hosts"><p class="field-help">Strict host verification is always enabled. The SSH transport receives this one file, not your SSH config or directory. Authentication is restricted to the configured repository; other private repositories remain inaccessible through these credentials.</p>
+              <div class="notice">Use plain git commands from this project, or git -C with this exact project path. Arbitrary global -c overrides, custom helpers, cloning and submodules are not enabled. Remote access currently requires a regular .git directory, not a linked worktree.</div>
+            </div>
           </section>
           <section data-settings-panel="network" hidden>
             <div class="card-heading"><h2>Network access</h2><span class="subtle">Egress & local services</span></div>
             <label for="s-network">Network mode</label><select id="s-network"><option value="unrestricted">Allow network connections</option><option value="restricted">Restricted · domain proxy and explicit TCP ports</option><option value="blocked">Blocked · offline only</option></select>
             <div class="notice" id="network-note"></div>
-            <div id="network-rules"><div class="field-grid"><div><label for="s-domains">Allowed domains</label><textarea id="s-domains" class="compact-textarea" placeholder="api.kilo.ai&#10;*.example.com"></textarea></div><div><label for="s-deny-domains">Denied domains</label><textarea id="s-deny-domains" class="compact-textarea" placeholder="telemetry.example.com"></textarea></div></div><p class="field-help">One host per line. Restricted HTTP(S) traffic uses nono’s proxy; clients must honor HTTP_PROXY / HTTPS_PROXY. Deny rules take priority.</p>
+            <div id="network-rules"><div class="field-grid"><div><label for="s-domains">Allowed domains</label><textarea id="s-domains" class="compact-textarea" placeholder="api.kilo.ai&#10;*.example.com"></textarea></div><div><label for="s-deny-domains">Denied domains</label><textarea id="s-deny-domains" class="compact-textarea" placeholder="telemetry.example.com"></textarea></div></div><p class="field-help">One hostname per line, without ports. Domain rules cover all HTTP(S) ports. Restricted HTTP(S) traffic uses nono’s proxy; clients must honor HTTP_PROXY / HTTPS_PROXY. Deny rules take priority.</p>
             <div class="field-grid"><div><label for="s-connect">Direct outbound TCP ports</label><input id="s-connect" placeholder="11434, 8080"></div><div><label for="s-listen">TCP listen ports</label><input id="s-listen" placeholder="3000, 5173"></div></div><p class="field-help">Direct ports bypass domain filtering and permit connections to any IP on that port. Listen ports permit binding, including non-loopback addresses.</p></div>
           </section>
           <section data-settings-panel="environment" hidden>

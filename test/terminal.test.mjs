@@ -54,7 +54,7 @@ test('authenticated PTY streams support input, ownership, resize, reconnect and 
 if(process.argv[2]==='ps'){console.log('[]');process.exit(0)}
 if(['--version','profile'].includes(process.argv[2])){console.log('fixture');process.exit(0)}
 process.stdin.setRawMode(true);process.stdin.resume();
-process.stdout.write('\\x1b[?1049h\\x1b[2J\\x1b[HREADY '+process.stdin.isTTY+' '+process.stdout.columns+'x'+process.stdout.rows+'\\r\\n');
+process.stdout.write('\\x1b[?1049h\\x1b[?1003h\\x1b[?1006h\\x1b[2J\\x1b[HREADY '+process.stdin.isTTY+' '+process.stdout.columns+'x'+process.stdout.rows+'\\r\\n');
 process.stdout.on('resize',()=>process.stdout.write('SIZE '+process.stdout.columns+'x'+process.stdout.rows+'\\r\\n'));
 process.stdin.on('data',d=>{process.stdout.write('INPUT '+JSON.stringify(d.toString())+'\\r\\n');if(d.toString()==='quit')process.exit(0)});
 process.on('SIGTERM',()=>process.exit(0));
@@ -79,7 +79,7 @@ process.on('SIGTERM',()=>process.exit(0));
   const a = await connect(); await until(() => JSON.stringify(a.frames).includes('READY true 90x25'));
   a.send({ type: 'control' }); await until(() => a.frames.some(f => f.type === 'state' && f.controller === a.snapshot.clientId));
   a.send({ type: 'input', data: 'hello ∑\r' }); await until(() => JSON.stringify(a.frames).includes('hello ∑'));
-  const b = await connect(); assert.match(b.snapshot.data, /hello ∑/); assert.match(b.snapshot.data, /\x1b\[\?1049h/);
+  const b = await connect(); assert.match(b.snapshot.data, /hello ∑/); assert.match(b.snapshot.data, /\x1b\[\?1049h/); assert.match(b.snapshot.mouseEncoding, /\x1b\[\?1006h/);
   b.send({ type: 'input', data: 'forbidden-input' }); await until(() => b.frames.some(f => f.type === 'error'));
   a.send({ type: 'resize', cols: 130, rows: 36 }); await until(() => JSON.stringify(a.frames).includes('SIZE 130x36'));
   b.send({ type: 'control', takeover: true }); await until(() => a.frames.some(f => f.type === 'state' && f.controller === b.snapshot.clientId));

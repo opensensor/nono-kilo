@@ -77,7 +77,7 @@ async function selectSession(id) {
   $('session-empty').hidden = true; $('session-content').hidden = false;
   $('output').textContent = 'Loading session…';
   liveTerminal.connect(id);
-  try { await refreshDetail(); if (state.tab === 'diff') await loadDiff(); if (state.tab === 'transcript') await loadTranscript(); } catch (error) { toast(error.message, true); }
+  try { await refreshDetail(); if (state.tab === 'network') window.loadNetwork?.(); if (state.tab === 'diff') await loadDiff(); if (state.tab === 'transcript') await loadTranscript(); } catch (error) { toast(error.message, true); }
 }
 async function refreshDetail() {
   const id = state.selected; if (!id) return;
@@ -135,11 +135,12 @@ async function launch(kind) {
 function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
-  for (const name of ['output', 'transcript', 'diff', 'details']) $(`${name}-panel`).hidden = tab !== name;
+  for (const name of ['output', 'transcript', 'diff', 'network', 'details']) $(`${name}-panel`).hidden = tab !== name;
   if (tab === 'output') liveTerminal.fit();
   if (tab === 'transcript') loadTranscript().catch(error => toast(error.message, true));
   if (tab === 'diff') loadDiff().catch(error => toast(error.message, true));
   if (tab === 'details') renderDetails();
+  if (tab === 'network') window.loadNetwork?.();
 }
 $('task-form').addEventListener('submit', event => { event.preventDefault(); launch('task'); });
 $('run-mode').addEventListener('change', () => { $('prompt').required = $('run-mode').value === 'batch'; $('prompt').placeholder = $('prompt').required ? 'Describe the task Kilo should complete in this run.' : 'Give Kilo an initial task, or leave empty to open its interactive terminal.'; });

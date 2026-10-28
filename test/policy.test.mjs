@@ -25,6 +25,7 @@ test('saved policies enforce restrictions, preserve revisions and reject stale w
   const saved = await f.store.save(f.project, s, 0);
   assert.equal(saved.revision, 1); assert.equal(saved.profile.workdir.access, 'read'); assert.equal(saved.profile.network.block, true);
   assert.equal(saved.profile.security.capability_elevation, false);
+  assert.equal(saved.profile.linux.af_unix_mediation, 'pathname');
   assert.equal(saved.profile.filesystem.allow.some(p => p === path.join(f.configDir, 'kilo')), false);
   assert.equal(saved.profile.environment.allow_vars.includes('OPENAI_API_KEY'), false);
   const launched = await f.store.launch(f.project);
@@ -47,6 +48,7 @@ test('unsafe grants, host controls and accidental network widening are rejected'
   const writeRuntime = defaults(); writeRuntime.extraPaths = [{ path: runtime, access: 'readwrite' }]; await assert.rejects(f.store.preview(f.project, writeRuntime), /runtime installations/);
   const blocked = defaults(); blocked.network.mode = 'blocked'; blocked.network.allowDomains = ['example.com']; await assert.rejects(f.store.preview(f.project, blocked), /restricted/);
   const empty = defaults(); empty.network.mode = 'restricted'; assert.equal((await f.store.preview(f.project, empty)).profile.network.block, true);
+  const portDomain = defaults(); portDomain.network.mode = 'restricted'; portDomain.network.allowDomains = ['example.com:443']; await assert.rejects(f.store.preview(f.project, portDomain), /without ports/);
   for (const name of ['PATH', 'LD_PRELOAD', 'DBUS_SESSION_BUS_ADDRESS', 'NODE_OPTIONS']) { const s = defaults(); s.environment.variables[name] = '/tmp/unsafe'; await assert.rejects(f.store.preview(f.project, s), /reserved/); }
   const key = defaults(); key.environment.variables.OPENAI_API_KEY = 'a-fixture'; await assert.rejects(f.store.preview(f.project, key), /Secrets/);
   const hooks = { ...defaults(), session_hooks: { pre: 'echo unsafe' } }; await assert.rejects(f.store.preview(f.project, hooks), /Unsupported/);
@@ -65,12 +67,16 @@ test('secrets store only metadata, rotate in keyring, and bind as references', a
   const snapshot = await f.store.launch(f.project, await f.secrets.resolve([secret.id]));
   assert.deepEqual(Object.values(snapshot.supervisorEnv), [value]);
   assert.equal(JSON.stringify(snapshot.profile).includes(value), false);
-  assert.ok(Object.keys(snapshot.profile.env_credentials)[0].startsWith('env://OPENSENSOR_SUPERVISOR_SECRET_'));
+  assert.equal(snapshot.supervisorEnv.TEST_API_KEY, value);
+  assert.ok(snapshot.profile.environment.allow_vars.includes('TEST_API_KEY'));
+  assert.deepEqual(snapshot.profile.env_credentials, {});
   assert.deepEqual(snapshot.profile.environment.deny_vars, ['OPENSENSOR_SUPERVISOR_*']);
   const rotated = await f.secrets.save({ id: secret.id, name: 'Fixture key', value: 'rotated-fixture-value' }); assert.equal(rotated.version, 2);
   await f.secrets.setEnabled(secret.id, false); await assert.rejects(f.secrets.resolve([secret.id]), /disabled/);
   s.network.mode = 'restricted'; s.secrets = [{ secretId: secret.id, mode: 'proxy', env: 'TEST_API_KEY', route: 'test', upstream: 'https://example.com', header: 'Authorization', format: 'Bearer {}', endpoints: [{ method: 'POST', path: '/v1/test' }] }];
   const proxy = await f.store.preview(f.project, s); assert.deepEqual(proxy.profile.network.credentials, ['test']); assert.equal(proxy.profile.network.custom_credentials.test.endpoint_rules[0].path, '/v1/test');
+  assert.deepEqual(proxy.profile.network.allow_domain, ['example.com']);
+  s.secrets[0].upstream = 'http://127.0.0.1:54321/v1'; assert.deepEqual((await f.store.preview(f.project, s)).profile.network.allow_domain, ['127.0.0.1']);
   s.network.mode = 'unrestricted'; await assert.rejects(f.store.preview(f.project, s), /restricted/);
   await f.secrets.remove(secret.id); assert.equal(f.values.has(secret.id), false);
 });
@@ -86,6 +92,23 @@ test('streaming log masking handles every chunk boundary and common encodings', 
   }
   let captured = ''; const stream = new RedactingStream(secrets, text => { captured += text; });
   for (const b of bytes) stream.push(Buffer.from([b])); stream.end(); assert.equal(captured.includes(value), false); assert.equal(captured.includes('[REDACTED]'), true);
+});
+
+test('Git permissions default to inspection, scope write sandboxes and validate remote authority', async t => {
+  const f = await fixture(t), s = defaults();
+  const read = (await f.store.preview(f.project, s)).profile.command_policies.commands.git;
+  assert.equal(read.from.session.invocation_policy.default, 'deny');
+  assert.equal(read.from.session.sandbox.fs_write.length, 0);
+  assert.equal(read.from.session.invocation_policy.allow.some(r => r.argv.prefix?.[0] === 'commit'), false);
+  s.git.local = 'write'; const write = (await f.store.preview(f.project, s)).profile.command_policies.commands.git;
+  assert.deepEqual(write.intercept.find(r => r.match.argv.prefix?.[0] === 'commit').sandbox.fs_write, [f.project]);
+  assert.equal(write.from.session.sandbox.fs_write.length, 0, 'inspect commands keep a read-only sandbox');
+  s.git.authorName = 'Fixture'; await assert.rejects(f.store.preview(f.project, s), /both/); s.git.authorEmail = 'fixture@example.invalid';
+  s.git.push = true; await assert.rejects(f.store.preview(f.project, s), /exact SSH/);
+  s.git.remote = 'git@github.com:opensensor/repo.git'; await assert.rejects(f.store.preview(f.project, s), /SSH agent or/);
+  s.git.branches = ['main*']; await assert.rejects(f.store.preview(f.project, s), /literal branch/);
+  s.git.branches = ['main']; s.network.mode = 'blocked'; await assert.rejects(f.store.preview(f.project, s), /blocked networking/);
+  const env = defaults(); env.environment.variables.GIT_SSH_COMMAND = 'anything'; await assert.rejects(f.store.preview(f.project, env), /reserved/);
 });
 
 test('project providers use trusted runtime configuration with references only', async t => {

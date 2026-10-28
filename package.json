@@ -9,7 +9,8 @@
     "test:sandbox": "node scripts/verify-sandbox.mjs",
     "test:deadline": "node scripts/verify-sandbox.mjs --deadline",
     "open": "node scripts/open.mjs",
-    "test:terminal": "node scripts/verify-terminal.mjs"
+    "test:terminal": "node scripts/verify-terminal.mjs",
+    "test:git": "node scripts/verify-git.mjs"
   },
   "engines": {
     "node": ">=22"

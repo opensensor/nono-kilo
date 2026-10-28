@@ -14,6 +14,7 @@ window.LiveTerminal = class LiveTerminal {
     this.$('terminal-select').onclick = () => this.openCopy();
     this.$('copy-terminal-text').onclick = () => this.copy(this.$('terminal-copy-text').value);
     this.$('terminal-focus').onclick = () => this.focusView(!document.body.classList.contains('terminal-focus'));
+    this.$('exit-focus').onclick = () => this.focusView(false);
     this.focusView(localStorage.getItem('opensensor.terminal.focus') === 'true');
     this.$('terminal-paste').onclick = async () => { if (!this.controls) return; try { const text = await navigator.clipboard.readText(); if (text.length > 24000) throw new Error('Paste at most 24,000 characters at a time.'); this.term.paste(text); this.term.focus(); } catch (error) { this.notice(error.message || 'Use your browser’s paste shortcut.', true); } };
     this.$('terminal-smaller').onclick = () => this.zoom(-1); this.$('terminal-larger').onclick = () => this.zoom(1);
@@ -36,7 +37,11 @@ window.LiveTerminal = class LiveTerminal {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.fit(); });
   }
   createTerminal(generation) {
-    this.term?.dispose(); this.$('terminal-surface').replaceChildren();
+    this.term?.dispose();
+    // FitAddon measures its direct parent. Keep that parent free of padding
+    // so every measured row and column fits inside the visible terminal.
+    const host = document.createElement('div'); host.className = 'terminal-host';
+    this.$('terminal-surface').replaceChildren(host);
     const openLink = (_event, uri) => { try { const url = new URL(uri); if (['http:', 'https:'].includes(url.protocol)) window.open(url.href, '_blank', 'noopener,noreferrer'); } catch {} };
     const term = this.term = new Terminal({ cols: 110, rows: 30, cursorBlink: true, cursorStyle: 'bar', fontSize: this.fontSize,
       fontFamily: '"Cascadia Code", "SFMono-Regular", "Liberation Mono", monospace', lineHeight: 1.15, scrollback: 5000,
@@ -46,7 +51,7 @@ window.LiveTerminal = class LiveTerminal {
     this.search = new SearchAddon.SearchAddon(); term.loadAddon(this.search);
     this.search.onDidChangeResults(({ resultIndex, resultCount }) => { this.$('terminal-matches').textContent = this.$('terminal-search').value ? `${resultIndex + 1} / ${resultCount}` : ''; });
     term.loadAddon(new WebLinksAddon.WebLinksAddon(openLink));
-    term.open(this.$('terminal-surface'));
+    term.open(host);
     this.$('terminal-renderer').textContent = 'DOM renderer';
     try { const webgl = new WebglAddon.WebglAddon(); term.loadAddon(webgl); webgl.onContextLoss(() => { webgl.dispose(); this.$('terminal-renderer').textContent = 'DOM renderer'; }); this.$('terminal-renderer').textContent = 'WebGL'; } catch { /* The accessible DOM renderer remains available. */ }
     // The server emulator answers terminal reports once, including when no browser is attached.
@@ -108,6 +113,9 @@ window.LiveTerminal = class LiveTerminal {
     const was = this.controls; this.remote = message;
     const running = ['starting', 'running', 'stopping'].includes(message.status);
     this.controls = Boolean(this.ready && message.interactive && running && message.controller === this.clientId);
+    // The controlling terminal fits this viewport and uses xterm's own
+    // scrollbar. An outer scrollbar would steal width after FitAddon measures.
+    this.$('terminal-surface').classList.toggle('controlling', this.controls);
     if (this.term) { this.term.options.disableStdin = !this.controls; this.term.options.convertEol = !message.interactive; }
     this.$('terminal-control-status').textContent = !running ? `${message.status} · saved screen` : !message.interactive ? 'Batch task · output only' : this.controls ? 'You have control' : message.controller ? 'Another tab has control' : 'Ready for input';
     this.$('terminal-size').textContent = `${message.cols} × ${message.rows} · ${message.viewers || 1} viewer${message.viewers > 1 ? 's' : ''}`;

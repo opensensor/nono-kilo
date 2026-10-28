@@ -15,12 +15,13 @@ const execute = promisify(execFile), home = os.homedir(), workspace = path.join(
 const root = await fs.mkdtemp(path.join(workspace, '.nono-dashboard-check-'));
 const project = path.join(root, 'project'), stateDir = path.join(root, 'management'), configDir = path.join(home, '.config');
 const nono = path.join(home, '.local/bin/nono'), profileDir = path.join(configDir, 'nono/profiles');
+const kilo = process.env.OPENSENSOR_KILO || path.join(path.dirname(process.execPath), 'kilo');
 await fs.mkdir(project); await fs.mkdir(stateDir); await fs.writeFile(path.join(project, 'readable.txt'), 'fixture');
 const secretStore = createSecretStore(stateDir), profiles = [];
-const store = createPolicyStore({ stateDir, configDir, workspace: root, sourceDir: path.resolve('.'), execute, nono, secretStore });
+const store = createPolicyStore({ stateDir, configDir, workspace: root, sourceDir: path.resolve('.'), execute, nono, kilo, secretStore });
 let secret, dashboard, upstream; let value = randomBytes(24).toString('hex');
 async function run(policy, code, extra = []) {
-  const snapshot = policy.secrets.some(s => s.mode === 'proxy') ? await secretStore.resolve(policy.secrets.map(s => s.secretId)) : undefined;
+  const snapshot = await secretStore.resolve(policy.secrets.map(s => s.secretId));
   const launched = await store.launch(project, snapshot); profiles.push(launched.profileName);
   try { return await execute(nono, ['run', '--profile', launched.profileName, '--allow-cwd', '--no-rollback', ...extra, '--', '/usr/bin/python3', '-c', code], { cwd: project, env: { ...process.env, ...launched.supervisorEnv }, timeout: 20000, maxBuffer: 200000 }); }
   catch (error) { throw new Error(String(error.stderr || error.stdout || error.message).replaceAll(value, '[REDACTED]')); }
@@ -59,12 +60,11 @@ try {
   s.provider = { ...s.provider, enabled: true, id: 'fixture', model: 'demo', proxyRoute: 'fixture' };
   await store.save(project, s, 3);
   const kiloPolicy = await store.launch(project, await secretStore.resolve([secret.id])); profiles.push(kiloPolicy.profileName);
-  const kilo = process.env.OPENSENSOR_KILO || path.join(path.dirname(process.execPath), 'kilo');
   const kiloResult = await execute(nono, ['run', '--profile', kiloPolicy.profileName, '--allow-cwd', '--no-rollback', '--', kilo, 'run', '--pure', '--model', 'fixture/demo', '--', 'Reply OK without tools.'], { cwd: project, env: { ...process.env, ...kiloPolicy.supervisorEnv }, timeout: 45000, maxBuffer: 300000 });
   assert.match(kiloResult.stdout, /KILO_PROXY_PASS/); assert.equal(authOK, true); console.log('PASS real Kilo uses the project provider through a credential proxy (local mock, no model spend)');
 
   const executable = path.join(project, 'fixture-kilo');
-  await fs.writeFile(executable, '#!/usr/bin/python3\nimport os,sys,time,signal,subprocess\nsubprocess.run(["rg","--files","."],check=True,capture_output=True)\nassert not any(k.startswith("OPENSENSOR_SUPERVISOR_") for k in os.environ)\nif sys.argv[-1]=="Wait for deadline":\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n time.sleep(120)\ns=os.environ["OPENSENSOR_TEST_KEY"]\nsys.stdout.write(s[:10]);sys.stdout.flush();time.sleep(0.03);sys.stdout.write(s[10:]+"\\n");sys.stdout.flush()\nprint("LOG_PASS")\n', { mode: 0o700 });
+  await fs.writeFile(executable, '#!/usr/bin/python3\nimport os,sys,time,signal,subprocess,urllib.request,urllib.error\nif sys.argv[-1]=="Probe network":\n base=os.environ["FIXTURE_BASE_URL"].rstrip("/")\n assert urllib.request.urlopen(urllib.request.Request(base+"/v1/test",headers={"Authorization":"Bearer "+os.environ["OPENSENSOR_TEST_KEY"]})).read()==b"UPSTREAM_PASS"\n for url in [base+"/private","https://blocked.example.invalid"]:\n  try: urllib.request.urlopen(urllib.request.Request(url,headers={"Authorization":"Bearer "+os.environ["OPENSENSOR_TEST_KEY"]}),timeout=3)\n  except urllib.error.HTTPError as e: assert e.code==403\n  else: raise AssertionError("unlisted network request allowed")\n print("NETWORK_PROBE_PASS",flush=True);time.sleep(4);sys.exit(0)\nsubprocess.run(["rg","--files","."],check=True,capture_output=True)\nassert not any(k.startswith("OPENSENSOR_SUPERVISOR_") for k in os.environ)\nif sys.argv[-1]=="Wait for deadline":\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n time.sleep(120)\ns=os.environ["OPENSENSOR_TEST_KEY"]\nsys.stdout.write(s[:10]);sys.stdout.flush();time.sleep(0.03);sys.stdout.write(s[10:]+"\\n");sys.stdout.flush()\nprint("LOG_PASS")\n', { mode: 0o700 });
   dashboard = createDashboard({ workspace: root, stateDir, configDir, nono, kilo: executable });
   await new Promise(resolve => dashboard.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${dashboard.address().port}`;
@@ -91,8 +91,18 @@ try {
   console.log('PASS real PTY output and serialized terminal screens mask bound credentials');
   const blocked = await execute(nono, ['run', '--profile', session.profileName, '--allow-cwd', '--no-rollback', '--', '/usr/bin/python3', '-c', `import urllib.request,urllib.error,json\nr=urllib.request.Request(${JSON.stringify(origin + '/api/secrets')},headers={'Origin':${JSON.stringify(origin)},'X-OpenSensor-Client':'dashboard'})\ntry: urllib.request.urlopen(r)\nexcept urllib.error.HTTPError as e: assert e.code==401\nelse: raise AssertionError('unauthenticated sandbox gained API access')\nprint('AUTH_PASS')`], { cwd: project, env: { ...process.env, [`OPENSENSOR_SUPERVISOR_SECRET_${secret.id.toUpperCase()}`]: value }, timeout: 20000 });
   assert.match(blocked.stdout, /AUTH_PASS/); console.log('PASS a sandboxed process cannot authenticate by forging dashboard headers');
+  s.network.mode = 'restricted'; s.secrets = [{ secretId: secret.id, mode: 'proxy', env: 'OPENSENSOR_TEST_KEY', route: 'fixture', upstream: `http://127.0.0.1:${upstream.address().port}`, header: 'Authorization', format: 'Bearer {}', endpoints: [{ method: 'GET', path: '/v1/test' }] }];
+  await api('/api/project-settings', { project, settings: s, revision: 5 });
+  const netRun = await api('/api/sessions', { project, prompt: 'Probe network', model: 'fixture/demo' }); profiles.push(netRun.profileName);
+  let netView;
+  for (let i = 0; i < 100; i++) { netView = await api(`/api/sessions/${netRun.id}/network`); if (netView.totals.denied >= 2 && netView.totals.responses) break; await new Promise(resolve => setTimeout(resolve, 100)); }
+  assert.ok(netView.totals.denied >= 2, JSON.stringify(netView.totals)); assert.ok(netView.totals.responses >= 1); assert.equal(JSON.stringify(netView).includes(value), false);
+  assert.ok(netView.events.some(e => e.host === 'blocked.example.invalid' && e.kind === 'deny'));
+  console.log('PASS live network view records allowed responses and denied endpoint/host decisions without secret values');
   if (process.argv.includes('--deadline')) {
-    s.limits.timeoutMinutes = 1; await api('/api/project-settings', { project, settings: s, revision: 5 });
+    s.network.mode = 'unrestricted'; s.secrets = [{ secretId: secret.id, mode: 'env', env: 'OPENSENSOR_TEST_KEY' }];
+
+    s.limits.timeoutMinutes = 1; await api('/api/project-settings', { project, settings: s, revision: 6 });
     const timed = await api('/api/sessions', { project, prompt: 'Wait for deadline', model: 'kilo/test' }); profiles.push(timed.profileName);
     console.log('Checking the real one-minute deadline against a process that ignores SIGTERM…');
     let result;
