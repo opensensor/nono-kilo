@@ -55,6 +55,11 @@ async function selectProject(project) {
   catch (error) { $('scope-summary').replaceChildren(); $('scope-note').textContent = error.message; toast(error.message, true); }
 }
 function showEmpty() { liveTerminal.disconnect(); $('session-content').hidden = true; $('session-empty').hidden = false; }
+function openLauncher() {
+  showPage('workspace'); liveTerminal.focusView(false);
+  $('session-launcher').scrollIntoView({ block: 'start', behavior: 'instant' });
+  $('prompt').focus({ preventScroll: true });
+}
 function renderSessions() {
   $('running-count').textContent = state.sessions.filter(s => active(s.status)).length;
   $('completed-count').textContent = state.sessions.filter(s => s.status === 'completed').length;
@@ -143,6 +148,7 @@ function switchTab(tab) {
   if (tab === 'network') window.loadNetwork?.();
 }
 $('task-form').addEventListener('submit', event => { event.preventDefault(); launch('task'); });
+document.querySelectorAll('[data-open-launcher]').forEach(button => button.addEventListener('click', openLauncher));
 $('run-mode').addEventListener('change', () => { $('prompt').required = $('run-mode').value === 'batch'; $('prompt').placeholder = $('prompt').required ? 'Describe the task Kilo should complete in this run.' : 'Give Kilo an initial task, or leave empty to open its interactive terminal.'; });
 $('test-sandbox').addEventListener('click', () => launch('check'));
 $('project-search').addEventListener('input', renderProjects);

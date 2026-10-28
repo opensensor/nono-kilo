@@ -27,7 +27,7 @@
     <div class="content" id="workspace-content">
       <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Kilo, within bounds.</h1><p>Choose a project. Give Kilo a task. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
       <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>
-      <div class="launch-grid">
+      <div class="launch-grid" id="session-launcher">
         <section class="card compose-card" aria-labelledby="compose-title">
           <div class="card-heading"><h2 id="compose-title">Start a session</h2><span class="subtle" id="selected-project-name">Select a project</span></div>
           <form id="task-form">
@@ -49,11 +49,11 @@
         </section>
       </div>
       <section class="sessions-section" aria-labelledby="sessions-title">
-        <div class="section-heading"><h2 id="sessions-title">Sessions <span id="session-count" class="count-pill">0</span></h2><label class="filter-label"><input id="all-projects" type="checkbox"> All projects</label></div>
+        <div class="section-heading"><h2 id="sessions-title">Sessions <span id="session-count" class="count-pill">0</span></h2><div class="session-actions"><label class="filter-label"><input id="all-projects" type="checkbox"> All projects</label><button type="button" class="button primary" data-open-launcher aria-controls="session-launcher">+ New session</button></div></div>
         <div class="session-grid card">
           <div id="sessions" class="session-list" aria-label="Session history"></div>
           <div class="session-view">
-            <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Start a session to see live output, inspect changes,<br>and keep track of what Kilo is doing.</p></div>
+            <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Choose a model and give Kilo a task to begin.</p><button type="button" class="button primary" data-open-launcher aria-controls="session-launcher">Start a session →</button></div>
             <div id="session-content" hidden>
               <div class="session-heading"><div><div class="session-title" id="session-title"></div><div class="session-subtitle" id="session-subtitle"></div></div><button class="button danger" id="stop-session" hidden>■ &nbsp; Stop</button></div>
               <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Terminal</button><button role="tab" aria-selected="false" data-tab="transcript">Transcript</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="network">Network</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download the full captured transcript">↓ Log</button></div>
