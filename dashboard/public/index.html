@@ -129,6 +129,7 @@
             <div class="card-heading"><h2>Git permissions</h2><button type="button" class="text-button" id="import-git-context">Import identity & origin</button></div>
             <p class="settings-intro">Control Git commands independently from the agent’s files and network. Changes apply to new sessions.</p>
             <label class="checkbox-row"><input id="s-git-enabled" type="checkbox"><span>Manage Git commands through nono<small>Unlisted commands and remote operations are denied by default.</small></span></label>
+            <p id="git-wsl-note" class="notice" hidden>Managed Git command policies do not start on this WSL2 host. Turn this option off to run a session. Git commands inside a writable project will then use the project's normal sandbox access without the managed Git restrictions.</p>
             <div id="git-fields">
               <label for="s-git-local">Local Git commands</label><select id="s-git-local"><option value="read">Inspect only · status, diff, log and repository queries</option><option value="write">Local changes · staging, commits, branches and history edits</option></select>
               <div class="notice">These controls govern Git commands. A writable project still permits direct edits to .git files. Use read-only project access to prevent direct file changes. Hooks, signing and credential helpers are disabled in managed Git.</div>

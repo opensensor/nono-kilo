@@ -4,6 +4,7 @@ import { parse } from 'jsonc-parser';
 import { atomicJSON, readJSON } from './core.mjs';
 
 const gatewayId = id => typeof id === 'string' && /^kilo\/[a-zA-Z0-9_~./:@+-]{1,250}$/.test(id);
+const openaiId = id => typeof id === 'string' && /^openai\/[a-zA-Z0-9_~./:@+-]{1,250}$/.test(id);
 export function createModelCatalog({ configDir, stateDir, kilo, execute, cwd }) {
   const file = path.join(stateDir, 'gateway-models.json');
   const saved = readJSON(file, {}); let ids = Array.isArray(saved.ids) ? saved.ids.filter(gatewayId) : [], at = Number(saved.at) || 0, pending, warning = '';
@@ -24,10 +25,20 @@ export function createModelCatalog({ configDir, stateDir, kilo, execute, cwd }) 
     const configured = await readModelCatalog(configDir);
     if (force || !ids.length) await refresh(force);
     else if (Date.now() - at > 15 * 60 * 1000) void refresh(false);
-    const all = new Map(ids.map(id => [id, { id, provider: 'kilo', providerName: 'Kilo gateway', name: id.slice(5), source: 'Kilo gateway', disabled: configured.disabledProviders.includes('kilo') || Boolean(configured.enabledProviders && !configured.enabledProviders.includes('kilo')) }]));
+    // Kilo keeps OAuth credentials in its own data store; list only model IDs.
+    // Query on each request so a fresh sign-in or logout is reflected without
+    // retaining a subscription catalog after the credential is removed.
+    let openaiIds = [];
+    try {
+      const { stdout } = await execute(kilo, ['models', 'openai', '--pure'], { cwd, timeout: 25000, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, XDG_CONFIG_HOME: configDir, KILO_DISABLE_AUTOUPDATE: 'true' } });
+      openaiIds = [...new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(openaiId))];
+    } catch { /* An unconnected OpenAI provider has no local models. */ }
+    const disabled = provider => configured.disabledProviders.includes(provider) || Boolean(configured.enabledProviders && !configured.enabledProviders.includes(provider));
+    const all = new Map(ids.map(id => [id, { id, provider: 'kilo', providerName: 'Kilo gateway', name: id.slice(5), source: 'Kilo gateway', disabled: disabled('kilo') }]));
+    for (const id of openaiIds) all.set(id, { id, provider: 'openai', providerName: 'OpenAI · Kilo sign-in', name: id.slice(7), source: 'Kilo OpenAI catalog', disabled: disabled('openai') });
     for (const model of configured.models) all.set(model.id, { ...all.get(model.id), ...model });
     const { disabledProviders, enabledProviders, ...publicConfig } = configured;
-    return { ...publicConfig, models: [...all.values()].sort((a, b) => a.providerName.localeCompare(b.providerName) || a.name.localeCompare(b.name)), configuredCount: configured.models.length, gatewayCount: ids.length, gatewayUpdatedAt: at ? new Date(at).toISOString() : null, warnings: [...configured.warnings, ...(warning ? [warning] : [])] };
+    return { ...publicConfig, models: [...all.values()].sort((a, b) => a.providerName.localeCompare(b.providerName) || a.name.localeCompare(b.name)), configuredCount: configured.models.length, gatewayCount: ids.length, openaiCount: openaiIds.length, gatewayUpdatedAt: at ? new Date(at).toISOString() : null, warnings: [...configured.warnings, ...(warning ? [warning] : [])] };
   };
 }
 

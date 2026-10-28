@@ -203,22 +203,23 @@ function renderModels() {
 }
 function applyModelCatalog(data) {
   state.models = data.models || []; state.configuredModel = data.configuredModel;
-  $('model-catalog-note').textContent = `${data.configuredCount ?? state.models.length} configured + ${data.gatewayCount || 0} gateway models`;
+  $('model-catalog-note').textContent = `${data.configuredCount ?? state.models.length} configured + ${data.gatewayCount || 0} gateway + ${data.openaiCount || 0} OpenAI models`;
   $('model-catalog-note').title = data.warnings?.join('\n') || 'Imported from the active config.json, kilo.json and kilo.jsonc files.';
   $('configured-models').replaceChildren(...state.models.map(model => { const option = new Option(`${model.providerName} · ${model.name}`, model.id); return option; }));
   renderModels(); if (data.warnings?.length) toast(data.warnings.join(' '), true);
 }
 $('model-search').addEventListener('input', renderModels);
-$('refresh-models').addEventListener('click', async () => { const button = $('refresh-models'); button.disabled = true; button.textContent = 'Refreshing models…'; try { applyModelCatalog(await api('/api/models?refresh=1')); toast('Kilo config and gateway model catalog refreshed.'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; button.textContent = '↻ Refresh model catalog'; } });
+$('refresh-models').addEventListener('click', async () => { const button = $('refresh-models'); button.disabled = true; button.textContent = 'Refreshing models…'; try { applyModelCatalog(await api('/api/models?refresh=1')); toast('Kilo model catalog refreshed.'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; button.textContent = '↻ Refresh model catalog'; } });
 async function boot() {
   $('connection-address').textContent = location.host;
   try {
     const access = new URLSearchParams(location.hash.slice(1)).get('access');
     if (access) { history.replaceState(null, '', location.pathname); await api('/api/auth', { token: access }); }
     const data = await api('/api/bootstrap'); state.projects = data.projects; state.sessions = data.sessions;
-    state.authenticated = true; state.defaults = data.defaultSettings; $('login-dialog').close();
+    state.authenticated = true; state.defaults = data.defaultSettings; state.runtime = data.runtime; $('login-dialog').close();
     $('runtime-name').textContent = data.runtime.ready ? 'nono ready' : 'Runtime unavailable';
     $('runtime-detail').textContent = `${data.runtime.nono} · Kilo ${data.runtime.kilo}`;
+    $('git-wsl-note').hidden = !data.runtime.wsl2;
     $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · Kilo ${data.runtime.kilo}`;
     $('workspace-path').textContent = data.workspace;
     $('profile-json').textContent = JSON.stringify(data.profile, null, 2);

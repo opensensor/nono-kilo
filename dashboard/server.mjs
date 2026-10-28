@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { RequestError, atomicJSON, inside, readJSON } from './lib/core.mjs';
 import { createAuth } from './lib/auth.mjs';
 import { createSecretStore } from './lib/secrets.mjs';
-import { createPolicyStore, validateModel, defaults } from './lib/policy.mjs';
+import { createPolicyStore, validateModel, isWsl2, wsl2ProxyUnsupported } from './lib/policy.mjs';
 import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
 import { validateProject, projectMetadata } from './lib/projects.mjs';
 import { TerminalHub, terminalSize } from './lib/terminal.mjs';
@@ -314,11 +314,11 @@ export function createDashboard(options = {}) {
     const runtime = await Promise.allSettled([runCommand(nono, ['--version']), runCommand(kilo, ['--version'])]);
     const profile = readJSON(path.join(configDir, 'nono/profiles', `${PROFILE}.json`), null);
     return { workspace, projects: await projects(), sessions: await allSessions(), profile,
-      profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: defaults(), ...await modelCatalog(), keyring: await secrets.status(),
+      profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: policies.defaultSettings(), ...await modelCatalog(), keyring: await secrets.status(),
       terminal: { available: true, scrollback: 5000, archiveBytes: MAX_LOG },
       runtime: { nono: runtime[0].status === 'fulfilled' ? runtime[0].value.stdout.trim() : 'Unavailable',
         kilo: runtime[1].status === 'fulfilled' ? runtime[1].value.stdout.trim() : 'Unavailable',
-        platform: process.platform, ready: runtime.every(r => r.status === 'fulfilled') } };
+        platform: process.platform, wsl2: isWsl2(), proxyUnsupported: wsl2ProxyUnsupported(), ready: runtime.every(r => r.status === 'fulfilled') } };
   }
 
   const server = http.createServer(async (req, res) => {

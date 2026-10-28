@@ -39,12 +39,13 @@ test('gateway models merge with configured models, refresh and survive offline r
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-gateway-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'kilo')); await fs.writeFile(path.join(root, 'kilo/config.json'), JSON.stringify({ provider: { kilo: { models: { 'vendor/model': { name: 'Configured display name' } } }, local: { models: { custom: {} } } } }));
   let calls = 0, fail = false;
-  const execute = async (_command, args) => { calls++; assert.ok(args.includes('--pure')); if (fail) throw new Error('offline'); return { stdout: 'Unrelated log\nkilo/vendor/model\nkilo/vendor/model:free\nkilo/~vendor/latest\nnot-a-model secret\n' }; };
+  const execute = async (_command, args) => { calls++; assert.ok(args.includes('--pure')); if (args[1] === 'openai') return { stdout: 'openai/gpt-6.1-sol\nopenai/gpt-6.1-sol\nkilo/not-openai\nnot-a-model secret\n' }; if (fail) throw new Error('offline'); return { stdout: 'Unrelated log\nkilo/vendor/model\nkilo/vendor/model:free\nkilo/~vendor/latest\nnot-a-model secret\n' }; };
   const options = { configDir: root, stateDir: root, kilo: 'kilo', execute, cwd: root }, catalog = createModelCatalog(options);
-  let first = await catalog(); assert.equal(first.models.length, 4); assert.equal(first.gatewayCount, 3); assert.equal(first.models.find(m => m.id === 'kilo/vendor/model').name, 'Configured display name');
-  await catalog(); assert.equal(calls, 1);
+  let first = await catalog(); assert.equal(first.models.length, 5); assert.equal(first.gatewayCount, 3); assert.equal(first.openaiCount, 1); assert.equal(first.models.find(m => m.id === 'kilo/vendor/model').name, 'Configured display name');
+  assert.equal(first.models.find(m => m.id === 'openai/gpt-6.1-sol').providerName, 'OpenAI · Kilo sign-in');
+  await catalog(); assert.equal(calls, 3);
   fail = true; first = await catalog({ force: true }); assert.equal(first.gatewayCount, 3); assert.match(first.warnings[0], /last saved/);
-  const restored = await createModelCatalog(options)(); assert.equal(restored.gatewayCount, 3); assert.equal(calls, 2);
+  const restored = await createModelCatalog(options)(); assert.equal(restored.gatewayCount, 3); assert.equal(calls, 6);
 });
 
 test('authenticated LAN PTY streams support input, ownership, resize, reconnect and persisted screens', { timeout: 20000 }, async t => {

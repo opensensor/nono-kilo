@@ -9,14 +9,14 @@ import { createSecretStore } from '../lib/secrets.mjs';
 import { RedactingStream, redactionValues } from '../lib/redaction.mjs';
 import { createAuth } from '../lib/auth.mjs';
 
-async function fixture(t) {
+async function fixture(t, { wsl2 = false, kilo } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-policy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = path.join(root, 'workspace/project'), stateDir = path.join(root, 'state'), configDir = path.join(root, 'config');
   await fs.mkdir(project, { recursive: true }); await fs.mkdir(stateDir); await fs.mkdir(configDir);
   const values = new Map();
   const secrets = createSecretStore(stateDir, async r => { if (r.action === 'put') { values.set(r.id, r.value); return { ok: true }; } if (r.action === 'get') return { value: values.get(r.id) }; if (r.action === 'delete') { values.delete(r.id); return { ok: true }; } });
-  const store = createPolicyStore({ stateDir, configDir, workspace: path.join(root, 'workspace'), sourceDir: path.join(root, 'controller'), home: root, nono: '/fake', execute: async () => ({ stdout: '{}' }), secretStore: secrets });
+  const store = createPolicyStore({ stateDir, configDir, workspace: path.join(root, 'workspace'), sourceDir: path.join(root, 'controller'), home: root, nono: '/fake', kilo, execute: async () => ({ stdout: '{}' }), secretStore: secrets, wsl2, proxyUnsupported: wsl2 });
   return { root, project, stateDir, configDir, secrets, store, values };
 }
 
@@ -34,6 +34,34 @@ test('saved policies enforce restrictions, preserve revisions and reject stale w
   const old = JSON.parse(await fs.readFile(path.join(f.configDir, 'nono/profiles', launched.profileName + '.json')));
   assert.equal(old.workdir.access, 'read');
   await assert.rejects(f.store.save(f.project, s, 1), /another window/);
+});
+
+test('standalone Kilo executable is readable inside the generated profile', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-binary-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const binary = path.join(root, '.kilo/bin/kilo');
+  await fs.mkdir(path.dirname(binary), { recursive: true });
+  await fs.writeFile(binary, 'fixture');
+  const project = path.join(root, 'project'), stateDir = path.join(root, 'state'), configDir = path.join(root, 'config');
+  await fs.mkdir(project); await fs.mkdir(stateDir); await fs.mkdir(configDir);
+  const store = createPolicyStore({ stateDir, configDir, workspace: root, sourceDir: path.join(root, 'controller'), home: root, nono: '/fake', kilo: binary, execute: async () => ({ stdout: '{}' }), secretStore: createSecretStore(stateDir, async () => ({})), wsl2: true });
+  const policy = await store.preview(project, store.defaultSettings());
+  assert.deepEqual(policy.profile.filesystem.read, [path.dirname(binary)]);
+});
+
+test('WSL2 profiles disable unsupported pathname Unix-socket mediation', async t => {
+  const f = await fixture(t, { wsl2: true });
+  const settings = f.store.defaultSettings();
+  assert.equal(settings.git.enabled, false);
+  const policy = await f.store.save(f.project, settings, 0);
+  assert.equal(policy.profile.linux.af_unix_mediation, 'off');
+  assert.equal(policy.profile.command_policies, undefined);
+  settings.git.enabled = true;
+  await assert.rejects(f.store.preview(f.project, settings), /unavailable on WSL2/);
+  settings.git.enabled = false; settings.network.mode = 'approval';
+  await assert.rejects(f.store.preview(f.project, settings), /cannot enforce proxy-only networking/);
+  settings.network.mode = 'blocked';
+  assert.equal((await f.store.preview(f.project, settings)).profile.network.block, true);
 });
 
 test('network approval profiles fail closed without a live controller gate', async t => {
