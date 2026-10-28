@@ -18,6 +18,7 @@ import pty from 'node-pty';
 import { createModelCatalog } from './lib/models.mjs';
 import { NetworkMonitor } from './lib/network.mjs';
 import { NetworkApprovals, SessionDeadline } from './lib/network-approvals.mjs';
+import { dashboardOrigin } from './lib/http-access.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -321,20 +322,18 @@ export function createDashboard(options = {}) {
   }
 
   const server = http.createServer(async (req, res) => {
-    const port = server.address()?.port;
-    const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-    const origins = new Set([...hosts].map(host => `http://${host}`));
+    const origin = dashboardOrigin(req, server);
     const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` };
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'${origin ? ` ${origin.replace('http:', 'ws:')}` : ''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` };
     const json = (status, data, extra = {}) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json', ...extra }); res.end(JSON.stringify(data)); };
     try {
-      if (!hosts.has(req.headers.host) || (req.headers.origin && !origins.has(req.headers.origin))) throw new RequestError('Only the local dashboard origin is allowed.', 403);
+      if (!origin) throw new RequestError('Only this dashboard host and origin are allowed.', 403);
       const url = new URL(req.url, `http://${req.headers.host}`);
       // A top-level link to the app is safe; its APIs still require same-origin requests.
       if (url.pathname.startsWith('/api/') && req.headers['sec-fetch-site'] === 'cross-site') throw new RequestError('Cross-site requests are not allowed.', 403);
       let body;
       if (req.method === 'POST') {
-        if (!origins.has(req.headers.origin) || req.headers['x-opensensor-client'] !== 'dashboard' || !req.headers['content-type']?.startsWith('application/json')) throw new RequestError('Use the local dashboard to make changes.', 403);
+        if (req.headers.origin !== origin || req.headers['x-opensensor-client'] !== 'dashboard' || !req.headers['content-type']?.startsWith('application/json')) throw new RequestError('Use the dashboard to make changes.', 403);
         let raw = '';
         for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 128000) throw new RequestError('Request is too large.', 413); }
         try { body = JSON.parse(raw); } catch { throw new RequestError('Invalid JSON.'); }
@@ -431,7 +430,8 @@ export function createDashboard(options = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const server = createDashboard();
   const port = Number(process.env.OPENSENSOR_PORT || 4317);
-  server.listen(port, '127.0.0.1', () => console.log(`OpenSensor Kilo dashboard: http://127.0.0.1:${port}`));
+  const host = process.env.OPENSENSOR_HOST || '127.0.0.1';
+  server.listen(port, host, () => console.log(`OpenSensor Kilo dashboard listening on ${host}:${port}`));
   server.on('error', error => { console.error(error.message); process.exitCode = 1; });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.shutdown().then(() => process.exit(0)));
 }

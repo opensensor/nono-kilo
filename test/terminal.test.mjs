@@ -47,7 +47,7 @@ test('gateway models merge with configured models, refresh and survive offline r
   const restored = await createModelCatalog(options)(); assert.equal(restored.gatewayCount, 3); assert.equal(calls, 2);
 });
 
-test('authenticated PTY streams support input, ownership, resize, reconnect and persisted screens', { timeout: 20000 }, async t => {
+test('authenticated LAN PTY streams support input, ownership, resize, reconnect and persisted screens', { timeout: 20000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-pty-')), workspace = path.join(root, 'workspace'), project = path.join(root, 'drive/project');
   await fs.mkdir(workspace); await fs.mkdir(project, { recursive: true }); const stateDir = path.join(root, 'state'), binary = path.join(root, 'fixture');
   await fs.writeFile(binary, `#!/usr/bin/env node
@@ -60,9 +60,10 @@ process.stdin.on('data',d=>{process.stdout.write('INPUT '+JSON.stringify(d.toStr
 process.on('SIGTERM',()=>process.exit(0));
 `, { mode: 0o700 });
   const server = createDashboard({ workspace, stateDir, configDir: path.join(root, 'config'), home: root, nono: binary, kilo: binary });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
   const sockets = []; t.after(async () => { for (const ws of sockets) ws.terminate(); await server.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
-  const origin = `http://127.0.0.1:${server.address().port}`, headers = { Origin: origin, 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' };
+  const lan = Object.values(os.networkInterfaces()).flat().find(n => !n.internal && n.family === 'IPv4')?.address || '127.0.0.1';
+  const origin = `http://${lan}:${server.address().port}`, headers = { Origin: origin, 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' };
   const key = JSON.parse(await fs.readFile(path.join(stateDir, 'browser-access.json'))).key;
   const auth = await fetch(origin+'/api/auth', { method: 'POST', headers, body: JSON.stringify({ token: key }) }); headers.Cookie = auth.headers.get('set-cookie').split(';')[0];
   const api = async (url, body) => { const res = await fetch(origin+url, { headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) }); assert.ok(res.ok, await res.clone().text()); return res.json(); };
@@ -71,6 +72,8 @@ process.on('SIGTERM',()=>process.exit(0));
   const url = origin.replace('http:', 'ws:')+`/api/sessions/${record.id}/terminal`;
   async function rejected(head, code) { await new Promise((resolve, reject) => { const ws = new WebSocket(url, { headers: head }); ws.on('open', () => reject(new Error('Unexpected connection'))); ws.on('error', () => {}); ws.on('unexpected-response', (_req, res) => { assert.equal(res.statusCode, code); res.resume(); ws.terminate(); resolve(); }); }); }
   await rejected({ Origin: origin }, 401); await rejected({ ...headers, Origin: 'https://other.invalid' }, 403);
+  await rejected({ ...headers, Host: `attacker.invalid:${server.address().port}`, Origin: `http://attacker.invalid:${server.address().port}` }, 403);
+  await rejected({ ...headers, Origin: `http://localhost:${server.address().port}` }, 403);
   async function connect() {
     const ws = new WebSocket(url, { headers }); sockets.push(ws); const frames = [];
     ws.on('message', raw => { const frame = JSON.parse(raw); frames.push(frame); if (['snapshot', 'output'].includes(frame.type)) ws.send(JSON.stringify({ type: 'ack', sequence: frame.sequence })); });

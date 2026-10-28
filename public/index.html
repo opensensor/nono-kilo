@@ -20,10 +20,10 @@
     <div class="project-heading"><span>PROJECTS</span><button id="add-project" aria-label="Add project" title="Add project">+</button></div>
     <label class="search"><span>⌕</span><input id="project-search" type="search" placeholder="Find a project" aria-label="Find a project"></label>
     <div id="projects" class="project-list" aria-label="Projects"></div>
-    <div class="sidebar-footer"><span class="online-dot" id="connection-dot"></span><div id="connection-label">Connecting locally…<small>127.0.0.1 · stays on this machine</small><button id="lock-dashboard" type="button" class="text-button">Lock this browser</button></div></div>
+    <div class="sidebar-footer"><span class="online-dot" id="connection-dot"></span><div id="connection-label">Connecting…<small id="connection-address"></small><button id="lock-dashboard" type="button" class="text-button">Lock this browser</button></div></div>
   </aside>
   <main>
-    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><button id="approval-alert" class="button approval-alert" hidden></button><button class="text-button focus-exit" id="exit-focus">Exit focus view</button><span class="local-pill"><span class="online-dot"></span> LOCAL ONLY</span></header>
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><button id="approval-alert" class="button approval-alert" hidden></button><button class="text-button focus-exit" id="exit-focus">Exit focus view</button><span class="local-pill"><span class="online-dot"></span> SELF HOSTED</span></header>
     <div class="content" id="workspace-content">
       <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Kilo, within bounds.</h1><p>Choose a project. Give Kilo a task. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
       <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>

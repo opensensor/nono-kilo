@@ -1,6 +1,6 @@
 # OpenSensor Kilo workspace
 
-A local browser dashboard for per-project nono policies, Kilo sessions, credentials, logs and working-tree changes. It listens at **http://127.0.0.1:4317** and uses the installed nono CLI to enforce the sandbox.
+A self-hosted browser dashboard for per-project nono policies, Kilo sessions, credentials, logs and working-tree changes. It uses the installed nono CLI to enforce the sandbox. The standalone default listens at **http://127.0.0.1:4317**; set `OPENSENSOR_HOST=0.0.0.0` to listen on all IPv4 interfaces.
 
 ## Open it
 
@@ -12,6 +12,8 @@ nono-kilo-dashboard-open
 ```
 
 The second command prints a **private access link**. Open it locally and keep it private. The browser exchanges the fragment for an HttpOnly, SameSite=Strict cookie valid for 24 hours, then removes the fragment. Use **Lock this browser** to sign out. `npm run open` from this repository also prints the link.
+
+For a laptop on the same network, enable `Environment=OPENSENSOR_HOST=0.0.0.0` in the user service and restart it. Open `http://<server-LAN-IP>:4317` on the laptop. Use the existing dashboard access key, or replace `127.0.0.1` in the private access link with the server's LAN IP. Authentication, same-origin mutation checks, and terminal WebSocket checks still apply. Requests accept the machine's interface IPs and hostname; arbitrary Host headers are rejected. This listener serves HTTP, so use it on a trusted network or behind an HTTPS proxy.
 
 ## Configure a project
 
@@ -105,7 +107,7 @@ The original `nono-kilo` launcher still uses its legacy profile. Use the dashboa
 
 ## Security and persistence
 
-- Loopback only, authenticated APIs, Host/Origin checks, JSON/custom-header mutation checks and a self-only CSP. Sandbox agents cannot authenticate by forging browser headers.
+- Configurable listener, authenticated APIs, explicit server Host checks, same-origin checks, JSON/custom-header mutation checks and a self-only CSP. Sandbox agents cannot authenticate by forging browser headers.
 - Authentication files, controller code, service configuration, credential stores and policy files stay outside sandbox grants. Commands use argument arrays, without a shell. The editor does not expose raw host hooks, elevation or arbitrary nono flags.
 - Shared Kilo data is the compatibility default. Environment secrets remain readable by the agent. Use proxy credentials and separate Kilo storage for stronger separation from existing machine credentials.
 - Captured stdout/stderr mask bound values and common URL/base64/JSON encodings **before terminal streaming and writing logs**, including values split across chunks. This is best-effort output hygiene, not protection against deliberate transformation or exfiltration. It does not sanitize project files, Kilo's own storage, or transcripts from commands launched outside the dashboard.
@@ -136,7 +138,7 @@ No frontend build step. Pinned dependencies provide xterm.js, node-pty, WebSocke
 
 The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. The terminal verifier runs real Kilo through a credential proxy, sends a second instruction over the PTY, and checks stopping. The API suite also checks WebSocket authentication/origins, control ownership, Unicode input, resizing, reconnect snapshots and persisted screens. These use generated fixture credentials, clean up temporary projects and make no paid model calls. `node scripts/verify-terminal.mjs --preview` keeps an isolated test dashboard on port 4318 for browser QA; Ctrl+C cleans it up.
 
-The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
+The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_HOST`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
 
 The approval verifier uses real nono and disposable loopback servers to verify held requests, allow/deny decisions, direct-network bypass rejection, CONNECT and absolute HTTP forwarding, and approval API authentication. `node scripts/verify-approvals.mjs --preview` keeps that fixture on port 4318 for browser QA. The terminal verifier's `--approvals` option declines unrelated external startup traffic and verifies real Kilo steering through its configured local credential route. Managed sessions suppress nono's post-exit profile-save prompt; denied permissions remain denied and session settings stay authoritative. Archived terminals are labelled as saved screens, and timed-out sessions show the runtime limit above the screen.
 

@@ -34,7 +34,7 @@ test('task text is a literal argument and tool auto approval is opt-in', () => {
   assert.throws(() => buildRunArgs({ name: 'x', prompt: '', model: 'kilo/test' }, 'kilo'));
 });
 
-test('HTTP origin guards, process lifecycle and captured output', async t => {
+test('LAN HTTP origin guards, authentication, process lifecycle and captured output', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-dashboard-http-'));
   const workspace = path.join(temp, 'workspace');
   const project = path.join(workspace, 'demo');
@@ -42,9 +42,10 @@ test('HTTP origin guards, process lifecycle and captured output', async t => {
   await fs.mkdir(project, { recursive: true });
   await fs.writeFile(binary, `#!/usr/bin/env node\nif(process.argv[2]==='ps'){console.log('[]');process.exit(0)}\nif(['--version','profile'].includes(process.argv[2])){console.log('test runtime');process.exit(0)}\nconsole.log(JSON.stringify(process.argv.slice(2)));\nprocess.on('SIGTERM',()=>process.exit(0));\nsetInterval(()=>{},1000);\n`, { mode: 0o755 });
   const server = createDashboard({ workspace, stateDir: path.join(temp, 'state'), configDir: path.join(temp, 'config'), home: temp, nono: binary, kilo: binary });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
   t.after(async () => { await server.shutdown(); await fs.rm(temp, { recursive: true, force: true }); });
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const lan = Object.values(os.networkInterfaces()).flat().find(n => !n.internal && n.family === 'IPv4')?.address || '127.0.0.1';
+  const base = `http://${lan}:${server.address().port}`;
   const headers = { Origin: base, 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' };
   const body = JSON.stringify({ project, prompt: `$(touch ${path.join(project, 'should-not-exist')})`, model: 'kilo/test' });
   const request = (route, options = {}) => fetch(base + route, options);
@@ -53,6 +54,12 @@ test('HTTP origin guards, process lifecycle and captured output', async t => {
     req.on('error', reject);
   });
   assert.equal(reboundStatus, 403);
+  const forgedHost = `attacker.invalid:${server.address().port}`;
+  assert.equal((await request('/api/sessions', { headers: { Host: forgedHost, Origin: `http://${forgedHost}` } })).status, 403);
+  assert.equal((await request('/api/sessions', { headers: { Origin: `http://localhost:${server.address().port}` } })).status, 403);
+  const page = await request('/'); assert.equal(page.status, 200);
+  assert.ok(page.headers.get('content-security-policy').includes(`ws://${lan}:${server.address().port}`));
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/`)).status, 200);
   assert.equal((await request('/', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 200);
   assert.equal((await request('/api/bootstrap', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   assert.equal((await request('/api/sessions', { method: 'POST', headers: { ...headers, Origin: 'https://attacker.invalid' }, body })).status, 403);

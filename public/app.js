@@ -125,7 +125,7 @@ async function refresh() {
   if (state.busy || !state.authenticated) return; state.busy = true;
   try {
     state.sessions = await api('/api/sessions'); renderSessions(); if (state.selected) await refreshDetail();
-    $('connection-label').firstChild.textContent = 'Connected locally'; $('connection-dot').style.background = '';
+    $('connection-label').firstChild.textContent = 'Connected'; $('connection-dot').style.background = '';
   } catch { $('connection-label').firstChild.textContent = 'Connection interrupted'; $('connection-dot').style.background = '#d29b75'; }
   finally { state.busy = false; }
 }
@@ -211,6 +211,7 @@ function applyModelCatalog(data) {
 $('model-search').addEventListener('input', renderModels);
 $('refresh-models').addEventListener('click', async () => { const button = $('refresh-models'); button.disabled = true; button.textContent = 'Refreshing models…'; try { applyModelCatalog(await api('/api/models?refresh=1')); toast('Kilo config and gateway model catalog refreshed.'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; button.textContent = '↻ Refresh model catalog'; } });
 async function boot() {
+  $('connection-address').textContent = location.host;
   try {
     const access = new URLSearchParams(location.hash.slice(1)).get('access');
     if (access) { history.replaceState(null, '', location.pathname); await api('/api/auth', { token: access }); }
