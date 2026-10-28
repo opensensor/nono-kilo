@@ -22,7 +22,7 @@ Select a project in the sidebar, then open **Project settings**. Git repositorie
 | General | Default model, optional OpenAI-compatible provider, tool approval, shared or separate Kilo storage, presets |
 | Files & runtimes | Read-only or writable project, extra read/write paths, denied paths, developer runtimes |
 | Git permissions | Inspect/local changes, commit identity, exact config files, SSH origin, fetch/push branches, agent or key-file authentication |
-| Network | Unrestricted, blocked or restricted networking; allowed/denied domains; direct TCP and listen ports |
+| Network | Unrestricted, blocked, restricted or ask-before-connect networking; allowed/denied domains; direct TCP and listen ports |
 | Environment | Inherited variable names and non-secret `NAME=value` settings |
 | Secret bindings | Environment injection or credential proxy with optional HTTP endpoint rules |
 | Limits & recovery | Deadline, memory cap, process/thread cap, GPU access, rollback snapshots and exclusions |
@@ -73,6 +73,9 @@ The network view retains up to 2,000 proxy events, 200 destinations and 900 conn
 
 ## Network, limits and recovery
 
+- Select **Ask before connecting to new destinations** in **Project settings → Network** for live approvals. New dashboard sessions hold unknown HTTP(S)/CONNECT destinations and show **Allow once**, **Allow for session**, and **Deny** above the terminal. A header alert links to waiting requests in other projects. Once means one connection (which can carry multiple HTTP requests); session decisions match the exact hostname and port, and Deny suppresses retries to that destination until the session ends. Saved allowed domains and credential routes proceed automatically; explicit deny rules remain denied. The Network tab retains decision history.
+- Pending approvals expire after five minutes without granting access. Their waiting time is excluded from the runtime deadline. Stop, shutdown, and client disconnection cancel pending requests; expired or already answered approvals cannot be replayed. Decisions use the authenticated, same-origin dashboard API and never follow Kilo tool auto-approval. Clients can still impose their own shorter request timeout and may need to retry.
+- Approval mode chains nono's proxy through a controller-owned loopback CONNECT gate. The child retains nono's proxy-only egress; the gate checks the saved rules, blocks controller endpoints and metadata addresses, and pins resolved IPs before connecting. No bodies or credentials are inspected by this gate. Standalone CLI launches of approval-mode projects are rejected because they have no browser approval controller. Direct TCP grants, managed Git/SSH grants, and explicitly configured credential routes retain their existing scope. Raw socket denials and Unix sockets such as `/run/docker.sock` are separate sandbox permissions and do not become approvable through this network UI.
 - Blocked mode is for offline checks and commands. Remote AI models cannot run there.
 - Restricted domain access uses nono's HTTP(S) proxy; clients must honor its proxy settings. Domain rules accept hostnames (including `*.example.com`) and cover all HTTP(S) ports; nono does not enforce port suffixes on domain rules. Without allowed domains or credential routes, outbound traffic is blocked except explicitly granted TCP ports.
 - Direct outbound ports permit **any destination IP on those ports**, bypassing domain rules. Listen ports allow binding beyond loopback.
@@ -122,6 +125,8 @@ npm start
 npm test
 npm run test:sandbox
 npm run test:terminal
+npm run test:approvals
+node scripts/verify-terminal.mjs --approvals
 npm run test:git
 # Also exercise a real one-minute timeout against a process ignoring SIGTERM:
 npm run test:deadline
@@ -132,6 +137,8 @@ No frontend build step. Pinned dependencies provide xterm.js, node-pty, WebSocke
 The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. The terminal verifier runs real Kilo through a credential proxy, sends a second instruction over the PTY, and checks stopping. The API suite also checks WebSocket authentication/origins, control ownership, Unicode input, resizing, reconnect snapshots and persisted screens. These use generated fixture credentials, clean up temporary projects and make no paid model calls. `node scripts/verify-terminal.mjs --preview` keeps an isolated test dashboard on port 4318 for browser QA; Ctrl+C cleans it up.
 
 The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
+
+The approval verifier uses real nono and disposable loopback servers to verify held requests, allow/deny decisions, direct-network bypass rejection, CONNECT and absolute HTTP forwarding, and approval API authentication. `node scripts/verify-approvals.mjs --preview` keeps that fixture on port 4318 for browser QA. The terminal verifier's `--approvals` option declines unrelated external startup traffic and verifies real Kilo steering through its configured local credential route. Managed sessions suppress nono's post-exit profile-save prompt; denied permissions remain denied and session settings stay authoritative. Archived terminals are labelled as saved screens, and timed-out sessions show the runtime limit above the screen.
 
 The `nono-ts` 0.3.0 package was evaluated during setup, but its declared Linux native package returned 404. This app uses the working CLI for enforcement and supervision.
 

@@ -17,6 +17,7 @@ import { TerminalHub, terminalSize } from './lib/terminal.mjs';
 import pty from 'node-pty';
 import { createModelCatalog } from './lib/models.mjs';
 import { NetworkMonitor } from './lib/network.mjs';
+import { NetworkApprovals, SessionDeadline } from './lib/network-approvals.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -75,17 +76,26 @@ export function createDashboard(options = {}) {
   const projectsFile = path.join(stateDir, 'projects.json');
   const records = new Map(readJSON(indexFile, []).map(record => [record.id, record]));
   const children = new Map();
+  const deadlines = new Map();
   let cache = { at: 0, sessions: [] };
   let refreshPromise;
   let closing = false;
   for (const record of records.values()) {
     if (activeStatus(record.status)) { record.status = 'interrupted'; record.endedAt = new Date().toISOString(); }
+    record.pendingApprovals = 0; record.approvalWait = false; record.deadlineAt = null;
   }
   const persist = () => atomicJSON(indexFile, [...records.values()]);
   const logPath = id => path.join(stateDir, `${id}.log`);
   const runCommand = (command, args, extra = {}) => execute(command, args, { timeout: 12000, maxBuffer: 1024 * 1024, ...extra });
   const modelCatalog = createModelCatalog({ configDir, stateDir, kilo, execute, cwd: ROOT });
   const network = new NetworkMonitor(stateDir, options.home);
+  const approvals = new NetworkApprovals({ stateDir, audit, protectedPorts: () => [server.address()?.port],
+    onChange: (id, count) => {
+      const record = records.get(id); if (!record) return;
+      record.pendingApprovals = count;
+      const timer = deadlines.get(id); if (count) timer?.pause(); else timer?.resume();
+      persist(); terminals.status(id);
+    } });
   const terminals = new TerminalHub({ getSession: findSession, audit,
     loadArchive: async record => {
       const screen = readJSON(path.join(stateDir, `${record.id}.screen.json`), null); if (screen) return screen;
@@ -170,13 +180,16 @@ export function createDashboard(options = {}) {
     const project = await projectPath(body.project);
     if ([...records.values()].filter(r => activeStatus(r.status)).length >= 3) throw new RequestError('Three dashboard sessions are already running. Stop one before starting another.', 409);
     const id = randomUUID();
+    try {
     const name = `kilo-${id.slice(0, 8)}`;
     const check = body.kind === 'check';
     if (body.interactive !== undefined && typeof body.interactive !== 'boolean') throw new RequestError('Interactive mode must be on or off.');
     const interactive = !check && body.interactive === true;
     const size = terminalSize(body.cols ?? 110, body.rows ?? 30);
     const boundValues = await secrets.resolve(policies.get(project).settings.secrets.map(s => s.secretId));
-    const policy = await policies.launch(project, boundValues);
+    const policy = await policies.launch(project, boundValues, { networkApproval: settings => approvals.open(id, {
+      ...settings.network, allowDomains: [...new Set([...settings.network.allowDomains, ...settings.secrets.filter(s => s.mode === 'proxy').map(s => new URL(s.upstream).hostname)])]
+    }) });
     const model = body.model || policy.settings.defaultModel;
     const autoApprove = body.autoApprove ?? policy.settings.autoApprove;
     const redactions = redactionValues([...boundValues.values(), ...policy.settings.environment.inherit.filter(name => /KEY|SECRET|TOKEN|PASS|AUTH|CREDENTIAL/.test(name)).map(name => process.env[name]).filter(Boolean)]);
@@ -193,7 +206,7 @@ export function createDashboard(options = {}) {
     }
     const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · boundary test' : model,
       prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt?.trim() || 'Interactive Kilo session', redactions), kind: check ? 'check' : 'task',
-      interactive, cols: size.cols, rows: size.rows, networkTrace: true,
+      interactive, cols: size.cols, rows: size.rows, networkTrace: true, networkApprovals: policy.settings.network.mode === 'approval', pendingApprovals: 0,
       autoApprove: !check && autoApprove, status: 'starting', startedAt: new Date().toISOString(), logBytes: 0,
       policyRevision: policy.revision, profileName: policy.profileName, policy: policy.profile, settings: policy.settings,
       secretVersions: policy.settings.secrets.map(b => { const s = metadata.find(s => s.id === b.secretId); return { name: s.name, version: s.version, env: b.env, mode: b.mode }; }) };
@@ -205,18 +218,26 @@ export function createDashboard(options = {}) {
     // Keep it separate from the PTY, so logs never corrupt Kilo's TUI.
     await fs.writeFile(network.logPath(id), '', { mode: 0o600 });
     args.unshift('--log-file', network.logPath(id));
-    const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, RUST_LOG: 'off,nono_proxy::audit=info', OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
+    const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, NONO_NO_SAVE_PROMPT: '1', RUST_LOG: 'off,nono_proxy::audit=info', OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
       ...(interactive ? { TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'OpenSensor' } : {}) };
+    if (record.networkApprovals) {
+      // CLI environment overrides must not replace the enforced upstream gate
+      // or turn proxy-only egress into allow-all, even on a customized host.
+      for (const name of Object.keys(env)) if (name.startsWith('NONO_')) delete env[name];
+      env.NONO_NO_SAVE_PROMPT = '1';
+    }
     const stdout = new RedactingStream(redactions, data => append(record, data));
     const stderr = new RedactingStream(redactions, data => append(record, data));
-    let deadline, finished = false, child, resolveDone;
+    let finished = false, child, resolveDone;
     const done = new Promise(resolve => { resolveDone = resolve; });
     const onDone = (code, signal) => {
       if (finished) return; finished = true;
-      clearTimeout(deadline); stdout.end(); stderr.end();
+      deadlines.get(id)?.stop(); deadlines.delete(id); stdout.end(); stderr.end();
       record.status = record.timedOut ? 'timed-out' : record.status === 'stopping' ? 'stopped' : code === 0 ? 'completed' : 'failed';
+      record.approvalWait = false; record.deadlineAt = null;
       record.exitCode = code; record.signal = signal; record.endedAt = new Date().toISOString();
       children.delete(id); persist(); cache.at = 0;
+      approvals.closeSession(id).catch(() => {});
       terminals.finish(id); resolveDone();
       audit('session.ended', { session: id, status: record.status, exitCode: code });
       if (check) fs.unlink(path.join(stateDir, `${id}.fixture`)).catch(() => {});
@@ -237,18 +258,21 @@ export function createDashboard(options = {}) {
       child.done = done; children.set(id, child);
       network.track(record, child.pid).catch(() => {});
       record.status = 'running'; persist(); cache.at = 0; terminals.status(id);
-      deadline = setTimeout(() => {
+      const deadline = new SessionDeadline(policy.settings.limits.timeoutMinutes * 60000, () => {
         record.timedOut = true; append(record, '\n[Dashboard time limit reached. Stopping session.]\n');
         stop(id).catch(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch {} });
-      }, policy.settings.limits.timeoutMinutes * 60000);
+      }, timer => { record.approvalWait = timer.paused; record.deadlineAt = timer.paused ? null : new Date(Date.now() + timer.remaining).toISOString(); });
+      deadlines.set(id, deadline); if (record.pendingApprovals) deadline.pause(); persist();
     } catch (error) { append(record, `Could not launch the terminal: ${error.message}\n`); onDone(1, null); }
     return record;
+    } catch (error) { await approvals.closeSession(id); throw error; }
   }
 
   async function stop(id) {
     const record = await findSession(id);
     if (!activeStatus(record.status)) throw new RequestError('This session has already ended.', 409);
     if (!record.external) { record.status = 'stopping'; persist(); terminals.status(id); }
+    deadlines.get(id)?.stop(); await approvals.closeSession(id);
     audit('session.stop-requested', { session: id });
     if (record.nonoId) {
       await runCommand(nono, ['stop', record.nonoId, '--timeout', '3'], { timeout: 8000 });
@@ -327,6 +351,7 @@ export function createDashboard(options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/project-settings/validate') return json(200, await policies.preview(await projectPath(body.project), body.settings));
       if (req.method === 'POST' && url.pathname === '/api/project-command') {
         const project = await projectPath(body.project);
+        if (policies.get(project).settings.network.mode === 'approval') throw new RequestError('Start this project with Start session in the dashboard so you can answer its network approvals.');
         const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
         return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, `OPENSENSOR_WORKSPACE=${workspace}`, `OPENSENSOR_DASHBOARD_STATE=${stateDir}`, `XDG_CONFIG_HOME=${configDir}`, `OPENSENSOR_NONO=${nono}`, `OPENSENSOR_KILO=${kilo}`, process.execPath, path.join(ROOT, 'scripts/run-project.mjs'), project].map(quote).join(' ')}`, note: 'Loads the latest saved project policy and resolves its bound keyring credentials at launch. Dashboard time limits and captured-log masking apply only to dashboard-launched sessions.' });
       }
@@ -346,17 +371,25 @@ export function createDashboard(options = {}) {
       if (req.method === 'GET' && url.pathname === '/api/models') return json(200, await modelCatalog({ force: url.searchParams.get('refresh') === '1' }));
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') return json(200, await bootstrap());
       if (req.method === 'GET' && url.pathname === '/api/sessions') return json(200, await allSessions());
+      if (req.method === 'GET' && url.pathname === '/api/approvals') return json(200, [...records.values()].filter(r => r.pendingApprovals && activeStatus(r.status)).map(r => ({ session: r.id, project: r.projectName, ...approvals.snapshot(r.id) })));
       if (req.method === 'POST' && url.pathname === '/api/sessions') return json(201, await mutate(() => start(body)));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
         const project = await projectPath(body.path);
         writeFileSync(projectsFile, JSON.stringify([...new Set([...readJSON(projectsFile, []), project])]), { mode: 0o600 });
         return json(200, await projects());
       }
-      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff|log|network))?$/);
+      const decisionMatch = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)\/approvals\/([a-z0-9-]+)$/);
+      if (req.method === 'POST' && decisionMatch) {
+        const record = await findSession(decisionMatch[1]);
+        if (!activeStatus(record.status) || record.status === 'stopping') throw new RequestError('This session is no longer accepting approvals.', 409);
+        return json(200, approvals.decide(record.id, decisionMatch[2], body.decision));
+      }
+      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff|log|network|approvals))?$/);
       if (match) {
         if (req.method === 'POST' && match[2] === 'stop') return json(200, await stop(match[1]));
         if (req.method === 'GET' && match[2] === 'diff') return json(200, await diff(match[1]));
         if (req.method === 'GET' && match[2] === 'network') return json(200, await network.snapshot(await findSession(match[1])));
+        if (req.method === 'GET' && match[2] === 'approvals') { await findSession(match[1]); return json(200, approvals.snapshot(match[1])); }
         if (req.method === 'GET' && match[2] === 'log') {
           const record = await findSession(match[1]); let output = 'No captured transcript.';
           if (!record.external) { try { output = await fs.readFile(logPath(record.id), 'utf8'); } catch {} }
@@ -369,7 +402,7 @@ export function createDashboard(options = {}) {
         res.writeHead(200, { ...headers, 'Content-Type': url.pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         return res.end(await fs.readFile(path.join(ROOT, 'node_modules', VENDOR_FILES[url.pathname])));
       }
-      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/terminal.js', '/network.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
+      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/terminal.js', '/network.js', '/approvals.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
         const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const types = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' };
         res.writeHead(200, { ...headers, 'Content-Type': types[name.split('.').at(-1)] });
@@ -382,6 +415,7 @@ export function createDashboard(options = {}) {
 
   server.shutdown = async () => {
     closing = true;
+    for (const timer of deadlines.values()) timer.stop(); await approvals.close();
     const drain = async ms => { let timer; try { await Promise.race([Promise.all([...children.values()].map(child => child.done)), new Promise(resolve => { timer = setTimeout(resolve, ms); })]); } finally { clearTimeout(timer); } };
     for (const child of children.values()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
     await drain(3000);

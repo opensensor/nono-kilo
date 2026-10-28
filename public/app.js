@@ -65,24 +65,25 @@ function renderSessions() {
   $('completed-count').textContent = state.sessions.filter(s => s.status === 'completed').length;
   const list = state.sessions.filter(s => $('all-projects').checked || s.project === state.project);
   $('session-count').textContent = list.length;
-  const hash = JSON.stringify(list.map(s => [s.id, s.status, s.id === state.selected]));
+  const hash = JSON.stringify(list.map(s => [s.id, s.status, s.pendingApprovals, s.id === state.selected]));
   if (hash === state.sessionHash) return; state.sessionHash = hash;
   if (!list.length) { $('sessions').replaceChildren(element('p', 'empty-list', 'No sessions in this project yet. Start a task or test the sandbox.')); return; }
   $('sessions').replaceChildren(...list.map(session => {
     const button = element('button', `session-item${session.id === state.selected ? ' selected' : ''}`);
     button.setAttribute('aria-label', `${session.status}: ${session.prompt}`);
     const heading = element('div', 'session-item-heading');
-    heading.append(element('span', `status-pill ${session.status}`, session.status), element('time', 'session-time', timeLabel(session.startedAt)));
+    heading.append(element('span', `status-pill ${session.pendingApprovals ? 'approval-pending' : session.status}`, session.pendingApprovals ? 'Needs approval' : session.status), element('time', 'session-time', timeLabel(session.startedAt)));
     button.append(heading, element('div', 'session-item-title', session.prompt), element('div', 'session-item-meta', session.kind === 'check' ? '◇ sandbox check' : `${session.interactive ? '⌘ terminal' : '↗ batch'} · ${session.projectName}`));
     button.addEventListener('click', () => selectSession(session.id)); return button;
   }));
 }
 async function selectSession(id) {
+  window.clearApprovalView?.(); $('session-outcome').hidden = true;
   state.selected = id; state.detail = null; state.sessionHash = ''; renderSessions();
   $('session-empty').hidden = true; $('session-content').hidden = false;
   $('output').textContent = 'Loading session…';
   liveTerminal.connect(id);
-  try { await refreshDetail(); if (state.tab === 'network') window.loadNetwork?.(); if (state.tab === 'diff') await loadDiff(); if (state.tab === 'transcript') await loadTranscript(); } catch (error) { toast(error.message, true); }
+  try { await refreshDetail(); window.loadApprovals?.(); if (state.tab === 'network') window.loadNetwork?.(); if (state.tab === 'diff') await loadDiff(); if (state.tab === 'transcript') await loadTranscript(); } catch (error) { toast(error.message, true); }
 }
 async function refreshDetail() {
   const id = state.selected; if (!id) return;
@@ -93,6 +94,8 @@ async function refreshDetail() {
   $('stop-session').hidden = !active(detail.status);
   $('stop-session').disabled = detail.status === 'stopping';
   $('waiting').hidden = !active(detail.status);
+  $('session-outcome').hidden = detail.status !== 'timed-out';
+  $('session-outcome').textContent = detail.status === 'timed-out' ? `Stopped at the ${detail.settings?.limits?.timeoutMinutes || 30}-minute runtime limit. This is a saved screen; prompts shown inside it are no longer active. Start a new session to continue working. Network approval mode is available in Project settings → Network.` : '';
   if (state.tab === 'transcript') await loadTranscript();
   if (state.tab === 'details') renderDetails();
 }

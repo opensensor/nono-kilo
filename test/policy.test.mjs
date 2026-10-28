@@ -36,6 +36,20 @@ test('saved policies enforce restrictions, preserve revisions and reject stale w
   await assert.rejects(f.store.save(f.project, s, 1), /another window/);
 });
 
+test('network approval profiles fail closed without a live controller gate', async t => {
+  const f = await fixture(t), s = defaults(); s.network.mode = 'approval';
+  const saved = await f.store.save(f.project, s, 0);
+  assert.equal(saved.profile.network.block, true);
+  await assert.rejects(f.store.launch(f.project), /dashboard/);
+  const launched = await f.store.launch(f.project, undefined, { networkApproval: async () => '127.0.0.1:49999' });
+  assert.equal(launched.profile.network.block, false);
+  assert.equal(launched.profile.network.upstream_proxy, '127.0.0.1:49999');
+  assert.deepEqual(launched.profile.network.no_proxy, []);
+  assert.deepEqual(launched.profile.network.upstream_bypass, []);
+  assert.deepEqual(launched.profile.network.connect_port, []);
+  assert.equal(launched.profile.security.capability_elevation, false);
+});
+
 test('unsafe grants, host controls and accidental network widening are rejected', async t => {
   const f = await fixture(t);
   for (const grant of [f.root, f.stateDir, f.configDir, '/proc']) {

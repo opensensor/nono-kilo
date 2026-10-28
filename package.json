@@ -10,6 +10,7 @@
     "test:deadline": "node scripts/verify-sandbox.mjs --deadline",
     "open": "node scripts/open.mjs",
     "test:terminal": "node scripts/verify-terminal.mjs",
+    "test:approvals": "node scripts/verify-approvals.mjs",
     "test:git": "node scripts/verify-git.mjs"
   },
   "engines": {

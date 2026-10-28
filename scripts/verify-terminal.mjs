@@ -16,7 +16,7 @@ const root = await fs.mkdtemp(path.join(workspace, '.nono-terminal-check-'));
 const project = path.join(root, 'terminal-demo'), stateDir = path.join(root, 'state'), configDir = path.join(home, '.config');
 await fs.mkdir(project); await fs.mkdir(stateDir); await fs.writeFile(path.join(project, 'README.txt'), 'Disposable terminal verification project. No private repository data.\n');
 const keyring = createSecretStore(stateDir), value = randomBytes(24).toString('hex');
-let secret, dashboard, upstream, ws, record, clientTerm; const profiles = []; const requests = [];
+let secret, dashboard, upstream, ws, record, clientTerm, approvalTimer; const profiles = []; const requests = [];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, count = 450) { for (let i = 0; i < count; i++) { if (await predicate()) return; await pause(100); } throw new Error(`Timed out: ${label}`); }
 try {
@@ -48,11 +48,24 @@ try {
   const api = async (url, body) => { const res = await fetch(origin+url, { headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) }); const data = await res.json(); if (!res.ok) throw new Error(`${res.status}: ${data.error}`); return data; };
   await api('/api/projects', { path: project });
   const s = defaults(); s.storage = 'isolated'; s.projectAccess = 'read'; s.network.mode = 'restricted'; s.rollback.enabled = false; s.limits.timeoutMinutes = 30;
+  if (process.argv.includes('--approvals')) s.network.mode = 'approval';
   s.defaultModel = 'terminalfixture/demo';
   s.provider = { ...s.provider, enabled: true, id: 'terminalfixture', model: 'demo', proxyRoute: 'terminalfixture' };
   s.secrets = [{ secretId: secret.id, mode: 'proxy', env: 'TERMINAL_FIXTURE_KEY', route: 'terminalfixture', upstream: `http://127.0.0.1:${upstream.address().port}/v1`, header: 'Authorization', format: 'Bearer {}', endpoints: [{ method: 'POST', path: '/chat/completions' }] }];
   await api('/api/project-settings', { project, settings: s, revision: 0 });
   record = await api('/api/sessions', { project, model: s.defaultModel, prompt: 'Verify live terminal output.', interactive: true, cols: 110, rows: 32 }); profiles.push(record.profileName);
+  if (process.argv.includes('--approvals')) {
+    let deciding = false;
+    approvalTimer = setInterval(async () => {
+      if (deciding) return; deciding = true;
+      try {
+        for (const request of (await api(`/api/sessions/${record.id}/approvals`)).pending) {
+          await api(`/api/sessions/${record.id}/approvals/${request.id}`, { decision: 'deny' });
+          console.log(`Fixture declined unrelated external connection: ${request.host}:${request.port}`);
+        }
+      } catch {} finally { deciding = false; }
+    }, 200);
+  }
   clientTerm = new headless.Terminal({ cols: 110, rows: 32, allowProposedApi: true });
   const screen = () => { const b = clientTerm.buffer.active; return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true) || '').join('\n'); };
   const frames = []; ws = new WebSocket(origin.replace('http:', 'ws:')+`/api/sessions/${record.id}/terminal`, { headers });
@@ -86,6 +99,7 @@ try {
   console.error(String(error.stack || error).replaceAll(value, '[REDACTED]')); process.exitCode = 1;
   if (record) { const log = await fs.readFile(path.join(stateDir, `${record.id}.log`), 'utf8').catch(() => ''); console.error(log.slice(-5000).replaceAll(value, '[REDACTED]')); }
 } finally {
+  clearInterval(approvalTimer);
   ws?.terminate(); clientTerm?.dispose(); if (dashboard) await dashboard.shutdown();
   if (upstream) { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
   if (secret) await keyring.remove(secret.id);

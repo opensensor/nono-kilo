@@ -112,6 +112,9 @@ window.LiveTerminal = class LiveTerminal {
   update(message) {
     const was = this.controls; this.remote = message;
     const running = ['starting', 'running', 'stopping'].includes(message.status);
+    this.$('terminal-status').textContent = running ? 'Live stream' : `Saved screen · ${message.status.replaceAll('-', ' ')}`;
+    this.$('terminal-dot').classList.toggle('offline', !running);
+    if (!running) this.$('terminal-latency').textContent = '';
     this.controls = Boolean(this.ready && message.interactive && running && message.controller === this.clientId);
     // The controlling terminal fits this viewport and uses xterm's own
     // scrollbar. An outer scrollbar would steal width after FitAddon measures.
@@ -153,7 +156,7 @@ window.LiveTerminal = class LiveTerminal {
         // sessions are Kilo TUIs, which explicitly enable DEC mode 1006.
         const mouseEncoding = message.mouseEncoding ?? (message.interactive ? '\x1b[?1006h' : '');
         this.term.write(message.data + mouseEncoding, () => { if (generation === this.generation) { this.send({ type: 'ack', sequence: message.sequence }); this.find(false); } });
-        this.update(message); this.$('terminal-status').textContent = 'Live stream'; this.$('terminal-dot').classList.remove('offline');
+        this.update(message);
         if (message.interactive && ['starting', 'running'].includes(message.status) && !message.controller) this.send({ type: 'control' });
         clearInterval(this.pingTimer); this.pingTimer = setInterval(() => this.send({ type: 'ping', at: Date.now() }), 5000);
       } else if (message.type === 'output') {
@@ -163,7 +166,7 @@ window.LiveTerminal = class LiveTerminal {
         if (this.pending > 2 * 1024 * 1024) return ws.close(4000, 'Renderer catching up');
         this.term.write(message.data, () => { if (generation === this.generation) { this.pending -= message.data.length; this.send({ type: 'ack', sequence: message.sequence }); } });
       } else if (message.type === 'state') this.update(message);
-      else if (message.type === 'pong') this.$('terminal-latency').textContent = `${Math.max(0, Date.now() - message.at)} ms`;
+      else if (message.type === 'pong' && ['starting', 'running', 'stopping'].includes(this.remote?.status)) this.$('terminal-latency').textContent = `${Math.max(0, Date.now() - message.at)} ms`;
       else if (message.type === 'error') this.notice(message.message, true);
     };
     ws.onclose = () => {
