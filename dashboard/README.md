@@ -1,0 +1,147 @@
+# OpenSensor Kilo workspace
+
+A self-hosted browser dashboard for per-project nono policies, Kilo sessions, credentials, logs and working-tree changes. It uses the installed nono CLI to enforce the sandbox. The standalone default listens at **http://127.0.0.1:4317**; set `OPENSENSOR_HOST=0.0.0.0` to listen on all IPv4 interfaces.
+
+## Open it
+
+The user service starts at login. To open a new authenticated browser:
+
+```sh
+systemctl --user start nono-kilo-dashboard
+nono-kilo-dashboard-open
+```
+
+The second command prints a **private access link**. Open it locally and keep it private. The browser exchanges the fragment for an HttpOnly, SameSite=Strict cookie valid for 24 hours, then removes the fragment. Use **Lock this browser** to sign out. `npm run open` from this repository also prints the link.
+
+For a laptop on the same network, enable `Environment=OPENSENSOR_HOST=0.0.0.0` in the user service and restart it. Open `http://<server-LAN-IP>:4317` on the laptop. Use the existing dashboard access key, or replace `127.0.0.1` in the private access link with the server's LAN IP. Authentication, same-origin mutation checks, and terminal WebSocket checks still apply. Requests accept the machine's interface IPs and hostname; arbitrary Host headers are rejected. This listener serves HTTP, so use it on a trusted network or behind an HTTPS proxy.
+
+## Configure a project
+
+Select a project in the sidebar, then open **Project settings**. Git repositories directly under `~/opensensor` are discovered automatically. **Add project** accepts nested workspace directories and explicit absolute paths on other drives, for example `/run/media/matteius/20TB-drive/squares`. Only that project folder is granted. Whole drives, system roots, credential stores and the dashboard controller are excluded. Registered projects remain visible as offline when their drive is disconnected; remount it before starting a session.
+
+| Section | Controls |
+| --- | --- |
+| General | Default model, optional OpenAI-compatible provider, tool approval, shared or separate Kilo storage, presets |
+| Files & runtimes | Read-only or writable project, extra read/write paths, denied paths, developer runtimes |
+| Git permissions | Inspect/local changes, commit identity, exact config files, SSH origin, fetch/push branches, agent or key-file authentication |
+| Network | Unrestricted, blocked, restricted or ask-before-connect networking; allowed/denied domains; direct TCP and listen ports |
+| Environment | Inherited variable names and non-secret `NAME=value` settings |
+| Secret bindings | Environment injection or credential proxy with optional HTTP endpoint rules |
+| Limits & recovery | Deadline, memory cap, process/thread cap, GPU access, rollback snapshots and exclusions |
+| Policy & history | Validate with nono, inspect/export the generated profile, restore a prior revision as a draft |
+
+Click **Save project policy**. Changes apply to future sessions. Each managed session records its policy revision, generated profile, run settings and secret versions. Stale edits are rejected instead of overwriting a newer revision. The latest 20 prior settings revisions are retained. Exporting the generated profile does not include dashboard deadlines or CLI resource-limit arguments; those remain in the project settings.
+
+The default retains this machine's existing Kilo login/configuration and allows networking. **Shared Kilo storage includes all credentials already in that configuration**; secret bindings do not hide them. Select separate storage to avoid sharing that login, configuration and session history. Its directories are `~/.local/share/opensensor-kilo-projects/<project-id>/{config,data,cache,state}`. Existing credentials are not copied there.
+
+## Secrets and project providers
+
+1. Open **Secrets → Add secret**. Give it a name and paste its value. The value goes into GNOME Keyring through Linux Secret Service. Only metadata is stored by the dashboard; there is no reveal/read-value API.
+2. Open the target project's **Secret bindings**, add the stored secret and choose a delivery mode.
+3. For **environment delivery**, set the variable expected by your provider, such as `OPENAI_API_KEY`. The agent and its subprocesses can read that value.
+4. For a **credential proxy**, select restricted networking, name the route (for example `provider`), and set its upstream URL, credential variable, header and format. Include an upstream prefix such as `/v1` if required. Optional endpoint rules use `METHOD /path`, for example `POST /chat/completions`; paths are relative to the upstream prefix. Blank endpoint rules allow all paths on that upstream.
+5. In **General**, enable an OpenAI-compatible project provider. Enter its provider ID, API model ID and actual token limits. For a proxy, enter the matching route name: its URL and placeholder key are connected automatically. For direct connections, enter the base URL and an environment binding's variable name. A local server without authentication can leave the key variable empty.
+6. Save and start a session. The project provider becomes the default model; you can override it per run.
+
+Kilo receives a trusted, transient `KILO_CONFIG_CONTENT` override with environment references, following [Kilo's configuration mechanism](https://kilo.ai/docs/code-with-ai/platforms/cli). Global Kilo files are not modified. The custom provider uses `@ai-sdk/openai-compatible`; other provider families can use existing Kilo configuration and environment bindings.
+
+Other clients must use the proxy's generated `ROUTE_BASE_URL` (for example `PROVIDER_BASE_URL`) and send the placeholder from the configured credential variable. nono validates it and injects the real credential upstream. See [nono credential injection](https://nono.sh/docs/cli/features/credential-injection).
+
+Rotate, enable/disable or delete credentials from **Secrets**. Remove active project bindings before deleting one. Disabled or missing credentials prevent new sessions. Rotation and disabling affect new sessions: stop existing sessions to end their current access. Historical settings referring to a deleted credential must be updated before restoring them.
+
+Managed runs resolve one credential version before launch. Values stay in host memory and the nono supervisor's environment; reserved source variables are removed from the child environment. Profiles contain references only. This prevents rotation from racing nono's credential lookup and the log masker. Proxy-delivered real values never enter the agent's environment.
+
+## Git permissions
+
+Managed Git defaults to inspection, with fetch and push disabled. **Import identity & origin** reads only name/email from global Git config and the project’s SSH origin into an unsaved draft. Set local changes to permit staging, commits, branches and history edits. System and global Git config reads are separate opt-ins. Hooks, fsmonitor, signing, external credential helpers and arbitrary global overrides are disabled. Read commands use a read-only command sandbox even when write commands are enabled.
+
+Remote operations require one exact SSH repository, strict known-host verification, and either an existing SSH agent or an exact key file under `~/.ssh`. A repository deploy key is preferable. The credential-bearing SSH command is brokered separately: the agent cannot read the key or invoke SSH directly through that grant. Other repository paths/hosts cannot use it. Existing agent keys can authenticate only through the restricted SSH invocation; the Git setting does not grant general access to the agent socket.
+
+Linux pathname Unix-socket mediation is enabled for every generated profile. This closes direct connections to undeclared host sockets, including SSH agents; the brokered SSH command receives only its selected socket grant.
+
+Use `git fetch origin`, `git ls-remote origin`, and `git push origin HEAD:main` (replace `main` with an allowed branch). Plain commands and `git -C <exact-project>` are supported. Unqualified push, force flags, deletion, additional refspecs, cloning and submodules are denied. Remote permissions currently require a regular checkout with its own `.git` directory. Read-only projects cannot enable Git writes or remote operations. SSH access is an explicit per-command TCP grant; configured denied hosts and blocked networking still reject it.
+
+These are **command permissions**. Linux Landlock cannot subtract `.git` from a writable project directory, so an agent with project write access can still edit raw Git metadata. Use read-only project access when metadata must also stay read-only. Managed Git can be disabled for legacy behavior; that does not expose SSH credentials.
+
+nono’s command broker normally tokenizes `env_credentials`. For explicitly selected environment delivery, the launcher instead inherits only the bound variable with its resolved value, preserving the existing environment-delivery contract without writing secrets into profiles. Git/SSH command environments do not inherit provider secrets. Credential proxies retain supervisor-only delivery.
+
+## Network visualizer
+
+Open a session’s **Network** tab. It shows an interactive destination graph, live socket counts, an activity timeline, proxy decisions and HTTP response statuses. Filter by destination or decision, select a graph node, pause the view without pausing the agent, or export the sanitized observations as JSON.
+
+The supervisor writes proxy events to a private trace separate from the PTY. The dashboard samples only sockets belonging to that session’s process tree every two seconds, guards against PID reuse, and saves a bounded history. Sampling can miss short-lived connections; unrestricted/raw TCP traffic has no proxy decisions, and encrypted CONNECT tunnels have no individual request detail. Kernel-blocked connections are not inferred from absent sockets. The UI states these coverage limits. No request bodies, headers, URL paths or queries are returned by the network API. Reverse-proxy route names map to their configured upstream hosts. Completed older sessions can show nono’s existing proxy audit events; connections from before collection began cannot be reconstructed.
+
+The network view retains up to 2,000 proxy events, 200 destinations and 900 connection samples per session; the API displays the most recent 250 events. Raw supervisor trace files are capped by rotation at 8 MiB with a truncation indicator. Snapshots persist beside the session logs. Restricted policies include a nonempty domain allowlist whenever a credential proxy is active, preventing nono’s empty-allowlist allow-all behavior.
+
+## Network, limits and recovery
+
+- Select **Ask before connecting to new destinations** in **Project settings → Network** for live approvals. New dashboard sessions hold unknown HTTP(S)/CONNECT destinations and show **Allow once**, **Allow for session**, and **Deny** above the terminal. A header alert links to waiting requests in other projects. Once means one connection (which can carry multiple HTTP requests); session decisions match the exact hostname and port, and Deny suppresses retries to that destination until the session ends. Saved allowed domains and credential routes proceed automatically; explicit deny rules remain denied. The Network tab retains decision history.
+- Pending approvals expire after five minutes without granting access. Their waiting time is excluded from the runtime deadline. Stop, shutdown, and client disconnection cancel pending requests; expired or already answered approvals cannot be replayed. Decisions use the authenticated, same-origin dashboard API and never follow Kilo tool auto-approval. Clients can still impose their own shorter request timeout and may need to retry.
+- Approval mode chains nono's proxy through a controller-owned loopback CONNECT gate. The child retains nono's proxy-only egress; the gate checks the saved rules, blocks controller endpoints and metadata addresses, and pins resolved IPs before connecting. No bodies or credentials are inspected by this gate. Standalone CLI launches of approval-mode projects are rejected because they have no browser approval controller. Direct TCP grants, managed Git/SSH grants, and explicitly configured credential routes retain their existing scope. Raw socket denials and Unix sockets such as `/run/docker.sock` are separate sandbox permissions and do not become approvable through this network UI.
+- Blocked mode is for offline checks and commands. Remote AI models cannot run there.
+- Restricted domain access uses nono's HTTP(S) proxy; clients must honor its proxy settings. Domain rules accept hostnames (including `*.example.com`) and cover all HTTP(S) ports; nono does not enforce port suffixes on domain rules. Without allowed domains or credential routes, outbound traffic is blocked except explicitly granted TCP ports.
+- Direct outbound ports permit **any destination IP on those ports**, bypassing domain rules. Listen ports allow binding beyond loopback.
+- Linux denied paths cover existing files at launch. Keep future secret files outside project grants. Additional paths are canonicalized again at launch. Control directories, credential stores and writable host executable directories cannot be granted.
+- Memory and process/thread caps require Linux cgroup v2 delegation. nono fails if it cannot enforce a requested cap. `0` means uncapped. The dashboard enforces deadlines with stop/termination and a forced-stop fallback.
+- Rollback controls retain nono snapshots of project work and extra writable grants. Kilo login, cache and session storage are excluded automatically. This dashboard does not yet provide a snapshot restore UI; use nono's recovery tools. Exclusions do not change access permissions.
+
+## Run and inspect
+
+In **Workspace**, choose **Interactive terminal**, select a model, and click **Start session**. An initial task is optional. This launches Kilo’s real terminal interface on a pseudo-terminal inside nono. Click the terminal to type, answer tool prompts, or use Kilo shortcuts. The steering composer sends follow-up text and Enter; **Ctrl+Enter** submits it. Kilo decides whether an instruction is queued or handled immediately. **Esc** and **Ctrl+C** send those keys; **Stop sandbox** terminates the run.
+
+**Focus view** fills the browser page while keeping browser tabs, the project sidebar and session tabs. **Select text** opens a stable, selectable snapshot. **Copy** copies the current selection, or the visible screen if nothing is selected. Hold **Shift** while dragging to select through Kilo’s mouse tracking; **Ctrl+Shift+C** copies without interrupting the process. Reconnect restores SGR mouse coordinates so TUI disclosure clicks keep working.
+
+The terminal streams over an authenticated WebSocket with sequence tracking, render acknowledgements and bounded backpressure. WebGL accelerates rendering where available, with a DOM fallback. Resize the terminal’s bottom edge, zoom its font, search the screen/scrollback, copy selected text, paste, or go fullscreen. Fullscreen falls back to a page-filling layout when the browser disallows the native API. Terminal escape sequences cannot write to your clipboard or automatically open links.
+
+Only one browser tab controls input and terminal dimensions at a time. Other tabs can watch or explicitly **Take over control**. Reconnecting restores the screen, alternate buffer and modes; unsent keystrokes are never replayed. Closing a tab leaves the session running until its deadline or an explicit stop. The live emulator retains 5,000 scrollback lines; reconnects and saved final screens include up to 2,500 lines. Full-screen TUIs control their own visible history.
+
+Choose **Batch task** for the previous one-task-and-exit behavior. Batch and externally launched sessions are output-only in the browser. Existing batch sessions cannot become interactive; start a new terminal session. **Transcript** shows the most recent 160,000 characters, **Log** downloads the full captured transcript (up to 8 MiB), and **Working tree** and **Details** show changes and the saved policy. Streaming continues beyond the transcript cap. At most three managed sessions run concurrently. Tool approval defaults remain in effect unless you opt into auto approval; kernel restrictions still apply.
+
+The model picker imports every configured model from the active `~/.config/kilo/config.json`, `kilo.json`, and `kilo.jsonc`, with provider groups, names, context limits and a search field. JSON comments and trailing commas are supported. Later files override duplicate model metadata; backups are ignored. **Refresh model catalog** reloads both local configuration and Kilo’s built-in gateway listing (`kilo models kilo --pure --refresh`). Gateway IDs are cached locally for fast startup and retained when offline; stale cached lists refresh in the background. The gateway appears as its own searchable provider group. The same catalog supplies project-default suggestions. Only model display metadata reaches the browser—provider credentials and options stay in Kilo’s configuration. Importing a listing does not copy those providers into isolated storage; configure a project provider there. The local setup currently has 40 configured models from 15 providers.
+
+The demo project has a saved read-only policy with a 30-minute deadline, 2 GiB memory cap and 128-process/thread cap. **Try the demo prompt** reads its temperature conversion and runs four tests. **Test sandbox boundaries** runs Python without a model, using the saved policy, to check project access, environment filtering and protected management files. Fully blocked policies also check outbound denial.
+
+**Copy terminal command** uses `scripts/run-project.mjs` to load the latest saved policy and resolve credentials into host memory at launch. No secret value appears in the copied command. It creates a policy snapshot for the Kilo TUI. Terminal sessions can be listed and stopped, but dashboard deadlines and captured-log masking apply only to dashboard-launched sessions. Terminal commands resolve keyring credentials at their own launch time.
+
+The original `nono-kilo` launcher still uses its legacy profile. Use the dashboard's copied command to apply saved project settings in a terminal.
+
+## Security and persistence
+
+- Configurable listener, authenticated APIs, explicit server Host checks, same-origin checks, JSON/custom-header mutation checks and a self-only CSP. Sandbox agents cannot authenticate by forging browser headers.
+- Authentication files, controller code, service configuration, credential stores and policy files stay outside sandbox grants. Commands use argument arrays, without a shell. The editor does not expose raw host hooks, elevation or arbitrary nono flags.
+- Shared Kilo data is the compatibility default. Environment secrets remain readable by the agent. Use proxy credentials and separate Kilo storage for stronger separation from existing machine credentials.
+- Captured stdout/stderr mask bound values and common URL/base64/JSON encodings **before terminal streaming and writing logs**, including values split across chunks. This is best-effort output hygiene, not protection against deliberate transformation or exfiltration. It does not sanitize project files, Kilo's own storage, or transcripts from commands launched outside the dashboard.
+- Working-tree views disable repository fsmonitor/hooks, external diffs, text conversion and submodule inspection so agent-controlled Git helpers do not execute on the host. Views include pre-existing changes, not just this session's edits.
+- Private state files live in `~/.local/state/nono-kilo-dashboard`: settings/history, session metadata, masked logs, audit metadata and the browser access key. Credentials remain in Secret Service under `opensensor-nono-dashboard`. Logs are capped at 8 MiB per run; serialized final terminal screens are stored beside them. The transcript tab shows the last 160,000 characters.
+- Stopping the dashboard stops its active managed sessions. History persists. This is a single-user local control surface, not a remote/multi-user service. Unsandboxed processes running as that OS user remain trusted.
+
+To invalidate every browser session, stop the service, remove only `~/.local/state/nono-kilo-dashboard/browser-access.json`, and restart. Obtain a new private link with `nono-kilo-dashboard-open`. Never commit that file or paste its contents into chat.
+
+## Development and verification
+
+```sh
+systemctl --user stop nono-kilo-dashboard
+npm ci
+npm start
+# In another terminal:
+npm test
+npm run test:sandbox
+npm run test:terminal
+npm run test:approvals
+node scripts/verify-terminal.mjs --approvals
+npm run test:git
+# Also exercise a real one-minute timeout against a process ignoring SIGTERM:
+npm run test:deadline
+```
+
+No frontend build step. Pinned dependencies provide xterm.js, node-pty, WebSockets and JSONC parsing. `npm ci` installs them; node-pty needs its native binding (a supported prebuild or local C++ build tools). Requirements: Node.js 22+, nono (tested with 0.80.0), Kilo (tested with 7.8.18), `/usr/bin/python3`, Python GI with `Secret` introspection, and an unlocked default Secret Service collection. The installed desktop has these. Unlock a locked keyring using the desktop password manager; there is no plaintext fallback.
+
+The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. The terminal verifier runs real Kilo through a credential proxy, sends a second instruction over the PTY, and checks stopping. The API suite also checks WebSocket authentication/origins, control ownership, Unicode input, resizing, reconnect snapshots and persisted screens. These use generated fixture credentials, clean up temporary projects and make no paid model calls. `node scripts/verify-terminal.mjs --preview` keeps an isolated test dashboard on port 4318 for browser QA; Ctrl+C cleans it up.
+
+The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_HOST`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
+
+The approval verifier uses real nono and disposable loopback servers to verify held requests, allow/deny decisions, direct-network bypass rejection, CONNECT and absolute HTTP forwarding, and approval API authentication. `node scripts/verify-approvals.mjs --preview` keeps that fixture on port 4318 for browser QA. The terminal verifier's `--approvals` option declines unrelated external startup traffic and verifies real Kilo steering through its configured local credential route. Managed sessions suppress nono's post-exit profile-save prompt; denied permissions remain denied and session settings stay authoritative. Archived terminals are labelled as saved screens, and timed-out sessions show the runtime limit above the screen.
+
+The `nono-ts` 0.3.0 package was evaluated during setup, but its declared Linux native package returned 404. This app uses the working CLI for enforcement and supervision.
+
+The Git verifier uses a temporary loopback SSH server and generated keys to exercise real fetch/push, denied destinations, force/branch restrictions and key isolation. It requires `/usr/sbin/sshd` and `ssh-keygen`. Command mediation also requires Kilo’s installed native `bin` directories to be non-group/world-writable (`chmod go-w` on those exact runtime directories after an npm update if needed); the installed directories were hardened during setup.
