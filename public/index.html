@@ -4,7 +4,9 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Run and manage local Kilo sessions with the OpenSensor nono sandbox.">
   <title>OpenSensor · Kilo workspace</title>
-  <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/vendor/xterm.css"><link rel="stylesheet" href="/style.css">
+  <script src="/vendor/xterm.js" defer></script><script src="/vendor/fit.js" defer></script><script src="/vendor/search.js" defer></script><script src="/vendor/webgl.js" defer></script><script src="/vendor/web-links.js" defer></script>
+  <script src="/terminal.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/settings.js" defer></script>
 </head>
@@ -27,10 +29,11 @@
       <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>
       <div class="launch-grid">
         <section class="card compose-card" aria-labelledby="compose-title">
-          <div class="card-heading"><h2 id="compose-title">Start a task</h2><span class="subtle" id="selected-project-name">Select a project</span></div>
+          <div class="card-heading"><h2 id="compose-title">Start a session</h2><span class="subtle" id="selected-project-name">Select a project</span></div>
           <form id="task-form">
-            <label class="sr-only" for="prompt">Task for Kilo</label><textarea id="prompt" maxlength="12000" placeholder="What should Kilo work on? Describe a change, ask a question, or run your tests." required></textarea>
-            <div class="model-row"><div><label for="model">MODEL</label><select id="model"><option value="kilo/kilo-auto/free">Kilo · free router</option></select></div><div class="model-note">Chosen for this run.<br>Your Kilo defaults stay unchanged.</div></div>
+            <div class="run-mode-row"><label for="run-mode">SESSION MODE</label><select id="run-mode"><option value="interactive">Interactive terminal · live input & steering</option><option value="batch">Batch task · finishes after one task</option></select></div>
+            <label class="sr-only" for="prompt">Task for Kilo</label><textarea id="prompt" maxlength="12000" placeholder="Give Kilo an initial task, or leave empty to open its interactive terminal."></textarea>
+            <div class="model-row"><div><label for="model">MODEL</label><input id="model-search" type="search" placeholder="Find a model…" aria-label="Find a model"><select id="model"><option value="kilo/kilo-auto/free">Kilo · free router</option></select></div><div class="model-note"><span id="model-catalog-note">Loading Kilo models…</span><br><button type="button" class="text-button" id="refresh-models">↻ Refresh model catalog</button></div></div>
             <label class="custom-model" id="custom-model-wrap" hidden>Model ID<input id="custom-model" placeholder="provider/model"></label>
             <label class="checkbox-row"><input type="checkbox" id="auto-approve"><span>Auto-approve Kilo tool prompts<small>Sandbox limits still apply. Off by default.</small></span></label>
             <div class="form-footer"><button type="button" class="text-button" id="demo-prompt">Try the demo prompt ↗</button><button type="submit" class="button primary" id="start-task">Start session <span>→</span></button></div>
@@ -53,8 +56,16 @@
             <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Start a session to see live output, inspect changes,<br>and keep track of what Kilo is doing.</p></div>
             <div id="session-content" hidden>
               <div class="session-heading"><div><div class="session-title" id="session-title"></div><div class="session-subtitle" id="session-subtitle"></div></div><button class="button danger" id="stop-session" hidden>■ &nbsp; Stop</button></div>
-              <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Output</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download captured output">↓ Log</button></div>
-              <div class="output-wrap" id="output-panel"><pre id="output" tabindex="0" aria-label="Session output"></pre><div class="waiting" id="waiting" hidden><span class="online-dot"></span> Session is running</div></div>
+              <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Terminal</button><button role="tab" aria-selected="false" data-tab="transcript">Transcript</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download the full captured transcript">↓ Log</button></div>
+              <div id="output-panel" class="terminal-panel">
+                <div class="terminal-toolbar"><div class="terminal-connection"><span class="online-dot" id="terminal-dot"></span><strong id="terminal-status">Connecting…</strong><span id="terminal-latency"></span></div><div class="terminal-actions"><button id="terminal-copy" title="Copy selected terminal text">Copy</button><button id="terminal-paste" title="Paste clipboard into the terminal">Paste</button><button id="terminal-smaller" aria-label="Smaller terminal font">A−</button><button id="terminal-larger" aria-label="Larger terminal font">A+</button><button id="terminal-bottom" title="Scroll to the live screen">↓ Live</button><button id="terminal-fullscreen" title="Expand terminal to full screen">⛶ Full screen</button></div></div>
+                <div class="terminal-search-row"><label for="terminal-search">Find</label><input type="search" id="terminal-search" placeholder="Search terminal scrollback"><button id="terminal-previous" aria-label="Previous terminal match">↑</button><button id="terminal-next" aria-label="Next terminal match">↓</button><span id="terminal-matches"></span><button id="terminal-reconnect">↻ Reconnect</button></div>
+                <div class="terminal-surface" id="terminal-surface" aria-label="Live session terminal"></div>
+                <div class="terminal-controlbar"><span id="terminal-control-status">Read only</span><span id="terminal-size"></span><span id="terminal-renderer">Canvas</span><button id="terminal-control">Take control</button><button id="terminal-release" hidden>Release</button><button id="terminal-escape" title="Send Escape to Kilo">Esc</button><button id="terminal-stop" hidden>■ Stop sandbox</button><button id="terminal-interrupt" title="Send Ctrl+C to the foreground process">Ctrl+C</button></div>
+                <form id="steering-form" class="steering-form"><label class="sr-only" for="steering-input">Steer the running Kilo session</label><textarea id="steering-input" rows="2" maxlength="12000" placeholder="Steer Kilo: add context, change direction, or send the next instruction. Ctrl+Enter to send."></textarea><div><button class="button primary" id="steering-send" type="submit">Send input ↵</button><span>Or click the terminal and type directly.</span></div></form>
+                <div id="terminal-notice" class="terminal-notice" role="status">Reconnecting restores the screen. Closing this page leaves the session running.</div>
+              </div>
+              <div class="output-wrap" id="transcript-panel" hidden><pre id="output" tabindex="0" aria-label="Session transcript"></pre><div class="waiting" id="waiting" hidden><span class="online-dot"></span> Session is running</div></div>
               <div id="diff-panel" class="diff-panel" hidden><p id="diff-note" class="info-note"></p><pre id="git-status"></pre><pre id="diff-output" tabindex="0"></pre></div>
               <div id="details-panel" class="details-panel" hidden></div>
             </div>
@@ -80,7 +91,7 @@
           <section data-settings-panel="general">
             <div class="card-heading"><h2>Project defaults</h2><span class="subtle">Start here</span></div>
             <p class="settings-intro">Choose how Kilo starts and where it keeps its configuration and login.</p>
-            <label for="s-model">Default model</label><input id="s-model" placeholder="provider/model"><p class="field-help">You can override the model when starting a session.</p>
+            <label for="s-model">Default model</label><input id="s-model" placeholder="provider/model" list="configured-models"><datalist id="configured-models"></datalist><p class="field-help">Choose a configured or Kilo gateway model, or enter a model ID. You can override it when starting a session.</p>
             <label class="checkbox-row"><input id="s-provider-enabled" type="checkbox"><span>Configure an OpenAI-compatible provider for this project<small>Use a local model server, private endpoint, or a credential proxy.</small></span></label>
             <div id="provider-fields" class="binding-card" hidden>
               <div class="field-grid"><div><label for="s-provider-id">Provider ID</label><input id="s-provider-id" placeholder="project"></div><div><label for="s-provider-model">API model ID</label><input id="s-provider-model" placeholder="your-model-id"></div></div>

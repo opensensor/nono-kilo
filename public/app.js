@@ -2,6 +2,10 @@ const $ = id => document.getElementById(id);
 const state = { projects: [], sessions: [], project: '', selected: null, tab: 'output', detail: null, busy: false, sessionHash: '', authenticated: false };
 let toastTimer;
 let pollTimer;
+const liveTerminal = new LiveTerminal({ notice: toast, onState: (id, message) => {
+  const record = state.sessions.find(s => s.id === id);
+  if (record && record.status !== message.status) { record.status = message.status; state.sessionHash = ''; renderSessions(); refreshDetail().catch(() => {}); }
+} });
 
 function toast(message, error = false) {
   $('toast').textContent = message; $('toast').className = error ? 'error' : ''; $('toast').hidden = false;
@@ -10,7 +14,7 @@ function toast(message, error = false) {
 async function api(url, body) {
   const response = await fetch(url, body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' }, body: JSON.stringify(body) });
   const result = await response.json();
-  if (!response.ok) { if (response.status === 401) { state.authenticated = false; if (!$('login-dialog').open) $('login-dialog').showModal(); } throw new Error(result.error || 'Request failed.'); }
+  if (!response.ok) { if (response.status === 401) { state.authenticated = false; liveTerminal.disconnect(); if (!$('login-dialog').open) $('login-dialog').showModal(); } throw new Error(result.error || 'Request failed.'); }
   return result;
 }
 function element(tag, className, text) {
@@ -29,6 +33,8 @@ function renderProjects() {
     button.setAttribute('aria-label', `Select project ${project.name}`); button.title = project.path;
     button.append(element('span', 'project-icon', '▱'), element('span', 'project-name', project.name));
     if (project.demo) button.append(element('span', 'demo-badge', 'DEMO'));
+    else if (project.available === false) button.append(element('span', 'demo-badge', 'OFFLINE'));
+    else if (project.external) button.append(element('span', 'demo-badge', 'DRIVE'));
     button.addEventListener('click', () => selectProject(project.path)); return button;
   });
   $('projects').replaceChildren(...items);
@@ -36,6 +42,7 @@ function renderProjects() {
 async function selectProject(project) {
   if (state.settingsDirty || state.settingsSaving) return toast('Save or discard your project settings draft before switching projects.', true);
   state.project = project; state.sessionHash = ''; localStorage.setItem('opensensor.project', project);
+  $('model-search').value = '';
   const current = state.projects.find(p => p.path === project);
   $('breadcrumb').textContent = current?.name || 'Choose a project';
   $('selected-project-name').textContent = current?.name || '';
@@ -45,9 +52,9 @@ async function selectProject(project) {
   }
   $('start-task').disabled = true; $('test-sandbox').disabled = true;
   try { if (project) await loadProjectSettings(project); }
-  catch (error) { toast(error.message, true); }
+  catch (error) { $('scope-summary').replaceChildren(); $('scope-note').textContent = error.message; toast(error.message, true); }
 }
-function showEmpty() { $('session-content').hidden = true; $('session-empty').hidden = false; }
+function showEmpty() { liveTerminal.disconnect(); $('session-content').hidden = true; $('session-empty').hidden = false; }
 function renderSessions() {
   $('running-count').textContent = state.sessions.filter(s => active(s.status)).length;
   $('completed-count').textContent = state.sessions.filter(s => s.status === 'completed').length;
@@ -61,7 +68,7 @@ function renderSessions() {
     button.setAttribute('aria-label', `${session.status}: ${session.prompt}`);
     const heading = element('div', 'session-item-heading');
     heading.append(element('span', `status-pill ${session.status}`, session.status), element('time', 'session-time', timeLabel(session.startedAt)));
-    button.append(heading, element('div', 'session-item-title', session.prompt), element('div', 'session-item-meta', session.kind === 'check' ? '◇ sandbox check' : session.projectName));
+    button.append(heading, element('div', 'session-item-title', session.prompt), element('div', 'session-item-meta', session.kind === 'check' ? '◇ sandbox check' : `${session.interactive ? '⌘ terminal' : '↗ batch'} · ${session.projectName}`));
     button.addEventListener('click', () => selectSession(session.id)); return button;
   }));
 }
@@ -69,21 +76,26 @@ async function selectSession(id) {
   state.selected = id; state.detail = null; state.sessionHash = ''; renderSessions();
   $('session-empty').hidden = true; $('session-content').hidden = false;
   $('output').textContent = 'Loading session…';
-  try { await refreshDetail(); if (state.tab === 'diff') await loadDiff(); } catch (error) { toast(error.message, true); }
+  liveTerminal.connect(id);
+  try { await refreshDetail(); if (state.tab === 'diff') await loadDiff(); if (state.tab === 'transcript') await loadTranscript(); } catch (error) { toast(error.message, true); }
 }
 async function refreshDetail() {
   const id = state.selected; if (!id) return;
-  const detail = await api(`/api/sessions/${id}`); if (id !== state.selected) return;
+  const detail = await api(`/api/sessions/${id}?output=0`); if (id !== state.selected) return;
   state.detail = detail;
   $('session-title').textContent = detail.prompt;
   $('session-subtitle').textContent = `${detail.status.toUpperCase()}  ·  ${detail.name}  ·  ${detail.model}`;
   $('stop-session').hidden = !active(detail.status);
   $('stop-session').disabled = detail.status === 'stopping';
   $('waiting').hidden = !active(detail.status);
-  const panel = $('output-panel'); const follow = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 85 || $('output').textContent === 'Loading session…';
-  const content = detail.output || (active(detail.status) ? 'Starting Kilo inside nono…\n' : 'No output was captured for this session.');
-  if ($('output').textContent !== content) { $('output').textContent = content; if (follow) panel.scrollTop = panel.scrollHeight; }
+  if (state.tab === 'transcript') await loadTranscript();
   if (state.tab === 'details') renderDetails();
+}
+async function loadTranscript() {
+  const id = state.selected; if (!id) return;
+  const detail = await api(`/api/sessions/${id}`); if (id !== state.selected) return;
+  const panel = $('transcript-panel'), follow = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 85;
+  $('output').textContent = detail.output || 'Waiting for output…'; if (follow) panel.scrollTop = panel.scrollHeight;
 }
 function renderDetails() {
   if (!state.detail) return;
@@ -115,7 +127,7 @@ async function launch(kind) {
   button.disabled = true;
   try {
     const model = $('model').value === 'custom' ? $('custom-model').value.trim() : $('model').value;
-    const result = await api('/api/sessions', { kind, project: state.project, model, prompt: $('prompt').value, autoApprove: $('auto-approve').checked });
+    const result = await api('/api/sessions', { kind, project: state.project, model, prompt: $('prompt').value, autoApprove: $('auto-approve').checked, interactive: kind !== 'check' && $('run-mode').value === 'interactive' });
     state.sessions.unshift(result); state.tab = 'output'; switchTab('output'); await selectSession(result.id); await refresh();
     toast(kind === 'check' ? 'Sandbox check started.' : 'Kilo session started.');
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
@@ -123,11 +135,14 @@ async function launch(kind) {
 function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
-  for (const name of ['output', 'diff', 'details']) $(`${name}-panel`).hidden = tab !== name;
+  for (const name of ['output', 'transcript', 'diff', 'details']) $(`${name}-panel`).hidden = tab !== name;
+  if (tab === 'output') liveTerminal.fit();
+  if (tab === 'transcript') loadTranscript().catch(error => toast(error.message, true));
   if (tab === 'diff') loadDiff().catch(error => toast(error.message, true));
   if (tab === 'details') renderDetails();
 }
 $('task-form').addEventListener('submit', event => { event.preventDefault(); launch('task'); });
+$('run-mode').addEventListener('change', () => { $('prompt').required = $('run-mode').value === 'batch'; $('prompt').placeholder = $('prompt').required ? 'Describe the task Kilo should complete in this run.' : 'Give Kilo an initial task, or leave empty to open its interactive terminal.'; });
 $('test-sandbox').addEventListener('click', () => launch('check'));
 $('project-search').addEventListener('input', renderProjects);
 $('all-projects').addEventListener('change', () => { state.sessionHash = ''; renderSessions(); });
@@ -144,7 +159,7 @@ document.querySelectorAll('.close-dialog').forEach(button => button.addEventList
 $('add-project').addEventListener('click', () => $('project-dialog').showModal());
 $('project-form').addEventListener('submit', async event => {
   event.preventDefault();
-  try { state.projects = await api('/api/projects', { path: $('project-path').value }); $('project-dialog').close(); renderProjects(); toast('Project added.'); }
+  try { const value = $('project-path').value.trim(); state.projects = await api('/api/projects', { path: value }); $('project-dialog').close(); renderProjects(); const added = state.projects.find(p => p.path === value || p.relative === value); if (added) await selectProject(added.path); toast('Project added.'); }
   catch (error) { toast(error.message, true); }
 });
 $('demo-prompt').addEventListener('click', async () => {
@@ -157,11 +172,34 @@ $('terminal-command').addEventListener('click', async () => {
   try { const result = await api('/api/project-command', { project: state.project }); await navigator.clipboard.writeText(result.command); toast('Copied terminal command using the saved project policy. Dashboard time limits apply only to dashboard runs.'); }
   catch (error) { toast(error.message, true); }
 });
-$('download-log').addEventListener('click', () => {
+$('download-log').addEventListener('click', async () => {
   if (!state.detail) return;
-  const url = URL.createObjectURL(new Blob([state.detail.output || 'No captured output.'], { type: 'text/plain' }));
-  const link = document.createElement('a'); link.href = url; link.download = `${state.detail.name}.log`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  try { const detail = state.detail, response = await fetch(`/api/sessions/${detail.id}/log`); if (!response.ok) throw new Error('Could not download the transcript.');
+    const url = URL.createObjectURL(await response.blob()); const link = document.createElement('a'); link.href = url; link.download = `${detail.name}.log`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { toast(error.message, true); }
 });
+function renderModels() {
+  const previous = $('model').value, query = $('model-search').value.toLowerCase();
+  const groups = new Map(); $('model').replaceChildren(new Option('Kilo · free router', state.defaultModel || 'kilo/kilo-auto/free'));
+  if (state.policyProject === state.project && state.policy?.settings.provider.enabled) $('model').append(new Option(`Project provider · ${state.policy.settings.defaultModel}`, state.policy.settings.defaultModel));
+  for (const model of state.models || []) {
+    if (model.id === state.defaultModel) continue;
+    if (query && !`${model.id} ${model.name} ${model.providerName}`.toLowerCase().includes(query) && model.id !== previous) continue;
+    let group = groups.get(model.provider); if (!group) { group = element('optgroup'); group.label = model.providerName || model.provider; groups.set(model.provider, group); $('model').append(group); }
+    const option = new Option(`${model.name}${model.id === state.configuredModel ? ' · Kilo default' : ''}`, model.id); option.disabled = model.disabled; option.title = `${model.id}${model.context ? ` · ${model.context.toLocaleString()} context` : ''}`; group.append(option);
+  }
+  $('model').append(new Option('Custom model…', 'custom'));
+  if ([...$('model').options].some(o => o.value === previous)) $('model').value = previous;
+}
+function applyModelCatalog(data) {
+  state.models = data.models || []; state.configuredModel = data.configuredModel;
+  $('model-catalog-note').textContent = `${data.configuredCount ?? state.models.length} configured + ${data.gatewayCount || 0} gateway models`;
+  $('model-catalog-note').title = data.warnings?.join('\n') || 'Imported from the active config.json, kilo.json and kilo.jsonc files.';
+  $('configured-models').replaceChildren(...state.models.map(model => { const option = new Option(`${model.providerName} · ${model.name}`, model.id); return option; }));
+  renderModels(); if (data.warnings?.length) toast(data.warnings.join(' '), true);
+}
+$('model-search').addEventListener('input', renderModels);
+$('refresh-models').addEventListener('click', async () => { const button = $('refresh-models'); button.disabled = true; button.textContent = 'Refreshing models…'; try { applyModelCatalog(await api('/api/models?refresh=1')); toast('Kilo config and gateway model catalog refreshed.'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; button.textContent = '↻ Refresh model catalog'; } });
 async function boot() {
   try {
     const access = new URLSearchParams(location.hash.slice(1)).get('access');
@@ -173,17 +211,15 @@ async function boot() {
     $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · Kilo ${data.runtime.kilo}`;
     $('workspace-path').textContent = data.workspace;
     $('profile-json').textContent = JSON.stringify(data.profile, null, 2);
-    $('model').replaceChildren(new Option('Kilo · free router', data.defaultModel));
-    if (data.configuredModel && data.configuredModel !== data.defaultModel) $('model').append(new Option(`Configured · ${data.configuredModel}`, data.configuredModel));
-    $('model').append(new Option('Custom model…', 'custom'));
+    state.defaultModel = data.defaultModel; applyModelCatalog(data);
     const saved = localStorage.getItem('opensensor.project');
     await selectProject(state.projects.some(p => p.path === saved) ? saved : state.projects[0]?.path || '');
     if (!state.selected && state.sessions.length) { const session = state.sessions.find(s => s.project === state.project); if (session) await selectSession(session.id); }
-    await refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 1500);
+    await refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 3000);
   } catch (error) { toast(error.message, true); $('runtime-name').textContent = 'Not connected'; }
 }
 $('login-dialog').addEventListener('cancel', event => event.preventDefault());
-$('lock-dashboard').addEventListener('click', async () => { try { await api('/api/logout', {}); state.authenticated = false; $('login-dialog').showModal(); } catch (error) { toast(error.message, true); } });
+$('lock-dashboard').addEventListener('click', async () => { try { await api('/api/logout', {}); state.authenticated = false; liveTerminal.disconnect(); $('login-dialog').showModal(); } catch (error) { toast(error.message, true); } });
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault(); $('login-error').hidden = true;
   const token = $('access-key').value.trim(); $('access-key').value = '';

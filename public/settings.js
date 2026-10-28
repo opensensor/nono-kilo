@@ -99,6 +99,7 @@ function renderPolicySummary() {
   $('policy-preview').textContent = JSON.stringify(record.profile, null, 2); state.preview = record.profile;
   $('policy-history').replaceChildren(...(record.history || []).slice().reverse().map(r => new Option(`Revision ${r.revision}${r.updatedAt ? ` · ${new Date(r.updatedAt).toLocaleString()}` : ' · initial defaults'}`, r.revision)));
   $('restore-policy').disabled = !(record.history || []).length;
+  renderModels();
   const option = [...$('model').options].find(o => o.value === s.defaultModel);
   $('model').value = option ? s.defaultModel : 'custom'; $('custom-model').value = s.defaultModel; $('custom-model-wrap').hidden = Boolean(option); $('auto-approve').checked = s.autoApprove;
 }

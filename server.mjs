@@ -13,20 +13,30 @@ import { createSecretStore } from './lib/secrets.mjs';
 import { createPolicyStore, validateModel, defaults } from './lib/policy.mjs';
 import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
 import { validateProject, projectMetadata } from './lib/projects.mjs';
+import { TerminalHub, terminalSize } from './lib/terminal.mjs';
+import pty from 'node-pty';
+import { createModelCatalog } from './lib/models.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE = 'opensensor-kilo-local';
 const FREE_MODEL = 'kilo/kilo-auto/free';
-const MAX_LOG = 1024 * 1024;
+const MAX_LOG = 8 * 1024 * 1024;
 const activeStatus = status => ['starting', 'running', 'stopping'].includes(status);
+const VENDOR_FILES = {
+  '/vendor/xterm.js': '@xterm/xterm/lib/xterm.js', '/vendor/xterm.css': '@xterm/xterm/css/xterm.css',
+  '/vendor/fit.js': '@xterm/addon-fit/lib/addon-fit.js', '/vendor/search.js': '@xterm/addon-search/lib/addon-search.js',
+  '/vendor/webgl.js': '@xterm/addon-webgl/lib/addon-webgl.js', '/vendor/web-links.js': '@xterm/addon-web-links/lib/addon-web-links.js'
+};
 
 export { RequestError, validateProject };
 
-export function buildRunArgs({ name, prompt, model, autoApprove = false, profileName = PROFILE, settings }, kilo) {
-  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw new RequestError('Enter a task of 1–12,000 characters.');
+export function buildRunArgs({ name, prompt = '', model, autoApprove = false, profileName = PROFILE, settings, interactive = false }, kilo) {
+  if (typeof prompt !== 'string' || (!interactive && !prompt.trim()) || prompt.length > 12000) throw new RequestError('Enter a task of up to 12,000 characters. Batch tasks need a prompt.');
   validateModel(model);
   if (typeof autoApprove !== 'boolean') throw new RequestError('Auto approval must be on or off.');
+  if (typeof interactive !== 'boolean') throw new RequestError('Interactive mode must be on or off.');
+  if (interactive) return [...sandboxArgs(name, profileName, settings), '--', kilo, '--pure', '--model', model, ...(autoApprove ? ['--auto'] : []), ...(prompt.trim() ? [`--prompt=${prompt.trim()}`] : [])];
   return [...sandboxArgs(name, profileName, settings), '--', kilo,
     'run', '--pure', '--model', model, '--title', prompt.trim().slice(0, 80), ...(autoApprove ? ['--auto'] : []), '--', prompt.trim()];
 }
@@ -37,18 +47,6 @@ function sandboxArgs(name, profileName, settings) {
     ...(settings?.limits.memoryMB ? ['--memory', `${settings.limits.memoryMB}M`] : []),
     ...(settings?.limits.maxProcesses ? ['--max-processes', String(settings.limits.maxProcesses)] : []),
     ...(settings?.allowGpu ? ['--allow-gpu'] : [])];
-}
-
-function configuredModel(configDir) {
-  let model = '';
-  for (const filename of ['config.json', 'kilo.json', 'kilo.jsonc']) {
-    try {
-      const text = readFileSync(path.join(configDir, 'kilo', filename), 'utf8');
-      const match = text.match(/^\s*"model"\s*:\s*"([^"\r\n]+)"/m);
-      if (match) model = match[1];
-    } catch { /* No Kilo config is also supported. */ }
-  }
-  return model;
 }
 
 export function createDashboard(options = {}) {
@@ -85,6 +83,16 @@ export function createDashboard(options = {}) {
   const persist = () => atomicJSON(indexFile, [...records.values()]);
   const logPath = id => path.join(stateDir, `${id}.log`);
   const runCommand = (command, args, extra = {}) => execute(command, args, { timeout: 12000, maxBuffer: 1024 * 1024, ...extra });
+  const modelCatalog = createModelCatalog({ configDir, stateDir, kilo, execute, cwd: ROOT });
+  const terminals = new TerminalHub({ getSession: findSession, audit,
+    loadArchive: async record => {
+      const screen = readJSON(path.join(stateDir, `${record.id}.screen.json`), null); if (screen) return screen;
+      let data = 'This terminal session was not captured by the dashboard.\r\n';
+      if (!record.external) { try { data = await fs.readFile(logPath(record.id), 'utf8'); } catch { data = 'No output was captured.\r\n'; } }
+      return { cols: record.cols || 110, rows: record.rows || 30, data };
+    },
+    saveScreen: (id, data) => atomicJSON(path.join(stateDir, `${id}.screen.json`), data)
+  });
 
   async function projects() {
     const discovered = [];
@@ -145,13 +153,14 @@ export function createDashboard(options = {}) {
   }
 
   function append(record, chunk) {
+    terminals.write(record.id, Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
     if (record.logBytes >= MAX_LOG) return;
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     const remaining = MAX_LOG - (record.logBytes || 0);
     const accepted = bytes.subarray(0, remaining);
     appendFileSync(logPath(record.id), accepted, { mode: 0o600 });
     record.logBytes = (record.logBytes || 0) + accepted.length;
-    if (bytes.length >= remaining) appendFileSync(logPath(record.id), '\n[Dashboard output limit reached: 1 MiB.]\n');
+    if (bytes.length >= remaining) appendFileSync(logPath(record.id), '\n[Transcript archive limit reached: 8 MiB. The live terminal continues streaming.]\n');
   }
 
   async function start(body) {
@@ -161,6 +170,9 @@ export function createDashboard(options = {}) {
     const id = randomUUID();
     const name = `kilo-${id.slice(0, 8)}`;
     const check = body.kind === 'check';
+    if (body.interactive !== undefined && typeof body.interactive !== 'boolean') throw new RequestError('Interactive mode must be on or off.');
+    const interactive = !check && body.interactive === true;
+    const size = terminalSize(body.cols ?? 110, body.rows ?? 30);
     const boundValues = await secrets.resolve(policies.get(project).settings.secrets.map(s => s.secretId));
     const policy = await policies.launch(project, boundValues);
     const model = body.model || policy.settings.defaultModel;
@@ -175,44 +187,61 @@ export function createDashboard(options = {}) {
       const code = `import os, pathlib, sys, socket\np=pathlib.Path(sys.argv[1])\nf=pathlib.Path('.nono-check-${id}.tmp')\nassert pathlib.Path('.').is_dir()\ntry:\n f.write_text('ok')\n assert f.read_text() == 'ok'\n f.unlink()\n assert not ${readOnly ? 'True' : 'False'}, 'Read-only write unexpectedly succeeded'\n print('PASS  Project reads and writes work',flush=True)\nexcept PermissionError:\n assert ${readOnly ? 'True' : 'False'}, 'Project write unexpectedly denied'\n print('PASS  Read-only project rejects writes',flush=True)\nassert 'OPENSENSOR_DEMO_SECRET' not in os.environ\nprint('PASS  Unrelated environment variables are filtered',flush=True)\nfor target,mode in [(p,'r'),(p.with_suffix('.escape'),'w')]:\n try:\n  with target.open(mode) as handle: handle.read() if mode=='r' else handle.write('escape')\n except PermissionError:\n  print('PASS  Dashboard controls: '+('read' if mode=='r' else 'write')+' denied',flush=True)\n else: raise RuntimeError('Sandbox boundary failed')\n${policy.profile.network.block && !policy.settings.network.connectPorts.length ? "try:\n socket.create_connection(('192.0.2.1',443),timeout=0.5)\nexcept PermissionError:\n print('PASS  Direct outbound connection denied',flush=True)\nelse: raise RuntimeError('Network boundary failed')\n" : ''}print('All configured boundary checks passed.',flush=True)`;
       args = [...sandboxArgs(name, policy.profileName, policy.settings), '--', '/usr/bin/python3', '-c', code, fixture];
     } else {
-      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove, profileName: policy.profileName, settings: policy.settings }, kilo);
+      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove, profileName: policy.profileName, settings: policy.settings, interactive }, kilo);
     }
     const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · boundary test' : model,
-      prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt.trim(), redactions), kind: check ? 'check' : 'task',
+      prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt?.trim() || 'Interactive Kilo session', redactions), kind: check ? 'check' : 'task',
+      interactive, cols: size.cols, rows: size.rows,
       autoApprove: !check && autoApprove, status: 'starting', startedAt: new Date().toISOString(), logBytes: 0,
       policyRevision: policy.revision, profileName: policy.profileName, policy: policy.profile, settings: policy.settings,
       secretVersions: policy.settings.secrets.map(b => { const s = metadata.find(s => s.id === b.secretId); return { name: s.name, version: s.version, env: b.env, mode: b.mode }; }) };
     records.set(id, record);
+    terminals.create(record, size);
     persist();
     audit('session.started', { project, session: id, revision: policy.revision });
-    const child = spawn(nono, args, { cwd: project, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true' } });
-    children.set(id, child);
-    child.on('spawn', () => { record.status = 'running'; persist(); cache.at = 0; });
+    const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
+      ...(interactive ? { TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'OpenSensor' } : {}) };
     const stdout = new RedactingStream(redactions, data => append(record, data));
     const stderr = new RedactingStream(redactions, data => append(record, data));
-    child.stdout.on('data', data => stdout.push(data));
-    child.stderr.on('data', data => stderr.push(data));
-    child.on('error', error => { append(record, `Could not launch nono: ${error.message}\n`); });
-    const deadline = setTimeout(() => {
-      record.timedOut = true; append(record, '\n[Dashboard time limit reached. Stopping session.]\n');
-      stop(id).catch(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch {} });
-    }, policy.settings.limits.timeoutMinutes * 60000);
-    child.on('close', (code, signal) => {
+    let deadline, finished = false, child, resolveDone;
+    const done = new Promise(resolve => { resolveDone = resolve; });
+    const onDone = (code, signal) => {
+      if (finished) return; finished = true;
       clearTimeout(deadline); stdout.end(); stderr.end();
       record.status = record.timedOut ? 'timed-out' : record.status === 'stopping' ? 'stopped' : code === 0 ? 'completed' : 'failed';
       record.exitCode = code; record.signal = signal; record.endedAt = new Date().toISOString();
       children.delete(id); persist(); cache.at = 0;
+      terminals.finish(id); resolveDone();
       audit('session.ended', { session: id, status: record.status, exitCode: code });
       if (check) fs.unlink(path.join(stateDir, `${id}.fixture`)).catch(() => {});
-    });
+    };
+    try {
+      if (interactive) {
+        child = pty.spawn(nono, args, { cwd: project, name: 'xterm-256color', ...size, env });
+        child.onData(data => stdout.push(data));
+        child.onExit(({ exitCode, signal }) => onDone(exitCode, signal));
+        terminals.attachProcess(id, { write: data => child.write(data), resize: (cols, rows) => { child.resize(cols, rows); record.cols = cols; record.rows = rows; }, pause: () => child.pause(), resume: () => child.resume() });
+      } else {
+        child = spawn(nono, args, { cwd: project, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+        child.stdout.on('data', data => stdout.push(data)); child.stderr.on('data', data => stderr.push(data));
+        child.on('error', error => { append(record, `Could not launch nono: ${error.message}\n`); });
+        child.on('close', onDone);
+        terminals.attachProcess(id, { pause: () => { child.stdout.pause(); child.stderr.pause(); }, resume: () => { child.stdout.resume(); child.stderr.resume(); } });
+      }
+      child.done = done; children.set(id, child);
+      record.status = 'running'; persist(); cache.at = 0; terminals.status(id);
+      deadline = setTimeout(() => {
+        record.timedOut = true; append(record, '\n[Dashboard time limit reached. Stopping session.]\n');
+        stop(id).catch(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch {} });
+      }, policy.settings.limits.timeoutMinutes * 60000);
+    } catch (error) { append(record, `Could not launch the terminal: ${error.message}\n`); onDone(1, null); }
     return record;
   }
 
   async function stop(id) {
     const record = await findSession(id);
     if (!activeStatus(record.status)) throw new RequestError('This session has already ended.', 409);
-    if (!record.external) { record.status = 'stopping'; persist(); }
+    if (!record.external) { record.status = 'stopping'; persist(); terminals.status(id); }
     audit('session.stop-requested', { session: id });
     if (record.nonoId) {
       await runCommand(nono, ['stop', record.nonoId, '--timeout', '3'], { timeout: 8000 });
@@ -227,11 +256,11 @@ export function createDashboard(options = {}) {
     return { stopped: true };
   }
 
-  async function details(id) {
+  async function details(id, includeOutput = true) {
     const record = await findSession(id);
     let output = '';
-    if (record.external) output = 'This session was started in a terminal. Its terminal transcript was not captured by the dashboard.\n';
-    else { try { output = stripVTControlCharacters(await fs.readFile(logPath(id), 'utf8')).slice(-160000); } catch {} }
+    if (includeOutput && record.external) output = 'This session was started in a terminal. Its terminal transcript was not captured by the dashboard.\n';
+    else if (includeOutput) { try { output = stripVTControlCharacters(await fs.readFile(logPath(id), 'utf8')).slice(-160000); } catch {} }
     return { ...record, output };
   }
 
@@ -253,7 +282,8 @@ export function createDashboard(options = {}) {
     const runtime = await Promise.allSettled([runCommand(nono, ['--version']), runCommand(kilo, ['--version'])]);
     const profile = readJSON(path.join(configDir, 'nono/profiles', `${PROFILE}.json`), null);
     return { workspace, projects: await projects(), sessions: await allSessions(), profile,
-      profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: defaults(), configuredModel: configuredModel(configDir), keyring: await secrets.status(),
+      profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: defaults(), ...await modelCatalog(), keyring: await secrets.status(),
+      terminal: { available: true, scrollback: 5000, archiveBytes: MAX_LOG },
       runtime: { nono: runtime[0].status === 'fulfilled' ? runtime[0].value.stdout.trim() : 'Unavailable',
         kilo: runtime[1].status === 'fulfilled' ? runtime[1].value.stdout.trim() : 'Unavailable',
         platform: process.platform, ready: runtime.every(r => r.status === 'fulfilled') } };
@@ -264,7 +294,7 @@ export function createDashboard(options = {}) {
     const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
     const origins = new Set([...hosts].map(host => `http://${host}`));
     const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` };
     const json = (status, data, extra = {}) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json', ...extra }); res.end(JSON.stringify(data)); };
     try {
       if (!hosts.has(req.headers.host) || (req.headers.origin && !origins.has(req.headers.origin))) throw new RequestError('Only the local dashboard origin is allowed.', 403);
@@ -305,6 +335,7 @@ export function createDashboard(options = {}) {
         const s = await secrets.setEnabled(id, body.enabled); audit('secret.enabled-changed', { id, enabled: s.enabled }); return s;
       }));
       if (req.method === 'GET' && url.pathname === '/api/audit') return json(200, readJSON(auditFile, []).slice(-100).reverse());
+      if (req.method === 'GET' && url.pathname === '/api/models') return json(200, await modelCatalog({ force: url.searchParams.get('refresh') === '1' }));
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') return json(200, await bootstrap());
       if (req.method === 'GET' && url.pathname === '/api/sessions') return json(200, await allSessions());
       if (req.method === 'POST' && url.pathname === '/api/sessions') return json(201, await mutate(() => start(body)));
@@ -313,13 +344,23 @@ export function createDashboard(options = {}) {
         writeFileSync(projectsFile, JSON.stringify([...new Set([...readJSON(projectsFile, []), project])]), { mode: 0o600 });
         return json(200, await projects());
       }
-      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff))?$/);
+      const match = url.pathname.match(/^\/api\/sessions\/([a-z0-9-]+)(?:\/(stop|diff|log))?$/);
       if (match) {
         if (req.method === 'POST' && match[2] === 'stop') return json(200, await stop(match[1]));
         if (req.method === 'GET' && match[2] === 'diff') return json(200, await diff(match[1]));
-        if (req.method === 'GET' && !match[2]) return json(200, await details(match[1]));
+        if (req.method === 'GET' && match[2] === 'log') {
+          const record = await findSession(match[1]); let output = 'No captured transcript.';
+          if (!record.external) { try { output = await fs.readFile(logPath(record.id), 'utf8'); } catch {} }
+          res.writeHead(200, { ...headers, 'Content-Type': 'text/plain; charset=utf-8' });
+          return res.end(url.searchParams.get('format') === 'ansi' ? output : stripVTControlCharacters(output));
+        }
+        if (req.method === 'GET' && !match[2]) return json(200, await details(match[1], url.searchParams.get('output') !== '0'));
       }
-      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
+      if (req.method === 'GET' && VENDOR_FILES[url.pathname]) {
+        res.writeHead(200, { ...headers, 'Content-Type': url.pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
+        return res.end(await fs.readFile(path.join(ROOT, 'node_modules', VENDOR_FILES[url.pathname])));
+      }
+      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/terminal.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
         const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const types = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' };
         res.writeHead(200, { ...headers, 'Content-Type': types[name.split('.').at(-1)] });
@@ -328,10 +369,16 @@ export function createDashboard(options = {}) {
       throw new RequestError('Not found.', 404);
     } catch (error) { if (!res.headersSent) json(error.status || 500, { error: error.status ? error.message : 'The dashboard could not complete the request.' }); }
   });
+  terminals.connect(server, auth);
 
   server.shutdown = async () => {
     closing = true;
+    const drain = async ms => { let timer; try { await Promise.race([Promise.all([...children.values()].map(child => child.done)), new Promise(resolve => { timer = setTimeout(resolve, ms); })]); } finally { clearTimeout(timer); } };
     for (const child of children.values()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
+    await drain(3000);
+    for (const child of children.values()) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    await drain(1000);
+    await terminals.flush(); terminals.close();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   };

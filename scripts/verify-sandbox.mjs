@@ -81,6 +81,14 @@ try {
   assert.equal(detail.status, 'completed'); assert.match(detail.output, /LOG_PASS/); assert.match(detail.output, /\[REDACTED\]/); assert.equal(detail.output.includes(value), false);
   assert.equal((await fs.readFile(path.join(stateDir, `${session.id}.log`), 'utf8')).includes(value), false);
   console.log('PASS authenticated API and on-disk masking of split credential output');
+  const terminalSession = await api('/api/sessions', { project, prompt: 'Run PTY fixture', model: 'kilo/test', interactive: true }); profiles.push(terminalSession.profileName);
+  let terminalDetail;
+  for (let i = 0; i < 100; i++) { terminalDetail = await api(`/api/sessions/${terminalSession.id}`); if (!['starting', 'running'].includes(terminalDetail.status)) break; await new Promise(resolve => setTimeout(resolve, 100)); }
+  assert.equal(terminalDetail.status, 'completed'); assert.match(terminalDetail.output, /LOG_PASS/); assert.match(terminalDetail.output, /\[REDACTED\]/); assert.equal(terminalDetail.output.includes(value), false);
+  const screenFile = path.join(stateDir, `${terminalSession.id}.screen.json`);
+  for (let i = 0; i < 20; i++) { if (await fs.access(screenFile).then(() => true, () => false)) break; await new Promise(resolve => setTimeout(resolve, 50)); }
+  const savedScreen = await fs.readFile(screenFile, 'utf8'); assert.equal(savedScreen.includes(value), false); assert.match(savedScreen, /REDACTED/);
+  console.log('PASS real PTY output and serialized terminal screens mask bound credentials');
   const blocked = await execute(nono, ['run', '--profile', session.profileName, '--allow-cwd', '--no-rollback', '--', '/usr/bin/python3', '-c', `import urllib.request,urllib.error,json\nr=urllib.request.Request(${JSON.stringify(origin + '/api/secrets')},headers={'Origin':${JSON.stringify(origin)},'X-OpenSensor-Client':'dashboard'})\ntry: urllib.request.urlopen(r)\nexcept urllib.error.HTTPError as e: assert e.code==401\nelse: raise AssertionError('unauthenticated sandbox gained API access')\nprint('AUTH_PASS')`], { cwd: project, env: { ...process.env, [`OPENSENSOR_SUPERVISOR_SECRET_${secret.id.toUpperCase()}`]: value }, timeout: 20000 });
   assert.match(blocked.stdout, /AUTH_PASS/); console.log('PASS a sandboxed process cannot authenticate by forging dashboard headers');
   if (process.argv.includes('--deadline')) {

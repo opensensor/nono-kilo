@@ -15,7 +15,7 @@ The second command prints a **private access link**. Open it locally and keep it
 
 ## Configure a project
 
-Select a project in the sidebar, then open **Project settings**. Git repositories directly under `~/opensensor` are discovered automatically. **Add project** accepts nested directories. The workspace root and dashboard controller are excluded.
+Select a project in the sidebar, then open **Project settings**. Git repositories directly under `~/opensensor` are discovered automatically. **Add project** accepts nested workspace directories and explicit absolute paths on other drives, for example `/run/media/matteius/20TB-drive/squares`. Only that project folder is granted. Whole drives, system roots, credential stores and the dashboard controller are excluded. Registered projects remain visible as offline when their drive is disconnected; remount it before starting a session.
 
 | Section | Controls |
 | --- | --- |
@@ -59,7 +59,15 @@ Managed runs resolve one credential version before launch. Values stay in host m
 
 ## Run and inspect
 
-In **Workspace**, enter a task and click **Start session**. Follow **Output**, inspect the **Working tree**, view **Details**, download the masked log or click **Stop**. At most three managed sessions run concurrently. Tool approval defaults remain in effect unless you opt into auto approval; kernel restrictions still apply.
+In **Workspace**, choose **Interactive terminal**, select a model, and click **Start session**. An initial task is optional. This launches Kilo’s real terminal interface on a pseudo-terminal inside nono. Click the terminal to type, answer tool prompts, or use Kilo shortcuts. The steering composer sends follow-up text and Enter; **Ctrl+Enter** submits it. Kilo decides whether an instruction is queued or handled immediately. **Esc** and **Ctrl+C** send those keys; **Stop sandbox** terminates the run.
+
+The terminal streams over an authenticated WebSocket with sequence tracking, render acknowledgements and bounded backpressure. WebGL accelerates rendering where available, with a DOM fallback. Resize the terminal’s bottom edge, zoom its font, search the screen/scrollback, copy selected text, paste, or go fullscreen. Fullscreen falls back to a page-filling layout when the browser disallows the native API. Terminal escape sequences cannot write to your clipboard or automatically open links.
+
+Only one browser tab controls input and terminal dimensions at a time. Other tabs can watch or explicitly **Take over control**. Reconnecting restores the screen, alternate buffer and modes; unsent keystrokes are never replayed. Closing a tab leaves the session running until its deadline or an explicit stop. The live emulator retains 5,000 scrollback lines; reconnects and saved final screens include up to 2,500 lines. Full-screen TUIs control their own visible history.
+
+Choose **Batch task** for the previous one-task-and-exit behavior. Batch and externally launched sessions are output-only in the browser. Existing batch sessions cannot become interactive; start a new terminal session. **Transcript** shows the most recent 160,000 characters, **Log** downloads the full captured transcript (up to 8 MiB), and **Working tree** and **Details** show changes and the saved policy. Streaming continues beyond the transcript cap. At most three managed sessions run concurrently. Tool approval defaults remain in effect unless you opt into auto approval; kernel restrictions still apply.
+
+The model picker imports every configured model from the active `~/.config/kilo/config.json`, `kilo.json`, and `kilo.jsonc`, with provider groups, names, context limits and a search field. JSON comments and trailing commas are supported. Later files override duplicate model metadata; backups are ignored. **Refresh model catalog** reloads both local configuration and Kilo’s built-in gateway listing (`kilo models kilo --pure --refresh`). Gateway IDs are cached locally for fast startup and retained when offline; stale cached lists refresh in the background. The gateway appears as its own searchable provider group. The same catalog supplies project-default suggestions. Only model display metadata reaches the browser—provider credentials and options stay in Kilo’s configuration. Importing a listing does not copy those providers into isolated storage; configure a project provider there. The local setup currently has 40 configured models from 15 providers.
 
 The demo project has a saved read-only policy with a 30-minute deadline, 2 GiB memory cap and 128-process/thread cap. **Try the demo prompt** reads its temperature conversion and runs four tests. **Test sandbox boundaries** runs Python without a model, using the saved policy, to check project access, environment filtering and protected management files. Fully blocked policies also check outbound denial.
 
@@ -72,9 +80,9 @@ The original `nono-kilo` launcher still uses its legacy profile. Use the dashboa
 - Loopback only, authenticated APIs, Host/Origin checks, JSON/custom-header mutation checks and a self-only CSP. Sandbox agents cannot authenticate by forging browser headers.
 - Authentication files, controller code, service configuration, credential stores and policy files stay outside sandbox grants. Commands use argument arrays, without a shell. The editor does not expose raw host hooks, elevation or arbitrary nono flags.
 - Shared Kilo data is the compatibility default. Environment secrets remain readable by the agent. Use proxy credentials and separate Kilo storage for stronger separation from existing machine credentials.
-- Captured stdout/stderr mask bound values and common URL/base64/JSON encodings **before writing logs**, including values split across chunks. This is best-effort output hygiene, not protection against deliberate transformation or exfiltration. It does not sanitize project files, Kilo's own storage, or terminal transcripts.
+- Captured stdout/stderr mask bound values and common URL/base64/JSON encodings **before terminal streaming and writing logs**, including values split across chunks. This is best-effort output hygiene, not protection against deliberate transformation or exfiltration. It does not sanitize project files, Kilo's own storage, or transcripts from commands launched outside the dashboard.
 - Working-tree views disable repository fsmonitor/hooks, external diffs, text conversion and submodule inspection so agent-controlled Git helpers do not execute on the host. Views include pre-existing changes, not just this session's edits.
-- Private state files live in `~/.local/state/nono-kilo-dashboard`: settings/history, session metadata, masked logs, audit metadata and the browser access key. Credentials remain in Secret Service under `opensensor-nono-dashboard`. Logs are capped at 1 MiB per run; the UI shows the last 160,000 characters.
+- Private state files live in `~/.local/state/nono-kilo-dashboard`: settings/history, session metadata, masked logs, audit metadata and the browser access key. Credentials remain in Secret Service under `opensensor-nono-dashboard`. Logs are capped at 8 MiB per run; serialized final terminal screens are stored beside them. The transcript tab shows the last 160,000 characters.
 - Stopping the dashboard stops its active managed sessions. History persists. This is a single-user local control surface, not a remote/multi-user service. Unsandboxed processes running as that OS user remain trusted.
 
 To invalidate every browser session, stop the service, remove only `~/.local/state/nono-kilo-dashboard/browser-access.json`, and restart. Obtain a new private link with `nono-kilo-dashboard-open`. Never commit that file or paste its contents into chat.
@@ -83,17 +91,19 @@ To invalidate every browser session, stop the service, remove only `~/.local/sta
 
 ```sh
 systemctl --user stop nono-kilo-dashboard
+npm ci
 npm start
 # In another terminal:
 npm test
 npm run test:sandbox
+npm run test:terminal
 # Also exercise a real one-minute timeout against a process ignoring SIGTERM:
 npm run test:deadline
 ```
 
-No npm dependencies or build step. Requirements: Node.js 22+, nono (tested with 0.80.0), Kilo (tested with 7.8.18), `/usr/bin/python3`, Python GI with `Secret` introspection, and an unlocked default Secret Service collection. The installed desktop has these. Unlock a locked keyring using the desktop password manager; there is no plaintext fallback.
+No frontend build step. Pinned dependencies provide xterm.js, node-pty, WebSockets and JSONC parsing. `npm ci` installs them; node-pty needs its native binding (a supported prebuild or local C++ build tools). Requirements: Node.js 22+, nono (tested with 0.80.0), Kilo (tested with 7.8.18), `/usr/bin/python3`, Python GI with `Secret` introspection, and an unlocked default Secret Service collection. The installed desktop has these. Unlock a locked keyring using the desktop password manager; there is no plaintext fallback.
 
-The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. It uses generated fixture credentials, cleans up its temporary projects and makes no paid model calls.
+The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. The terminal verifier runs real Kilo through a credential proxy, sends a second instruction over the PTY, and checks stopping. The API suite also checks WebSocket authentication/origins, control ownership, Unicode input, resizing, reconnect snapshots and persisted screens. These use generated fixture credentials, clean up temporary projects and make no paid model calls. `node scripts/verify-terminal.mjs --preview` keeps an isolated test dashboard on port 4318 for browser QA; Ctrl+C cleans it up.
 
 The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
 
