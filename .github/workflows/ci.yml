@@ -21,17 +21,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24"
       - name: Install tested runtimes
         shell: bash
         run: |
           set -euo pipefail
           bash scripts/install-nono.sh
           echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
-          kilo_version=$(python3 -c 'import json; print(json.load(open("versions.json"))["kilo"])')
-          npm install --global "@kilocode/cli@$kilo_version"
+          bash scripts/install-kilo-ci.sh
       - name: Validate package and profile
         run: python3 scripts/validate.py --nono nono
       - name: Check actual sandbox and Kilo runtime

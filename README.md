@@ -65,7 +65,8 @@ skill. To use nono flags directly, prepare the directories first:
 nono run --profile opensensor/kilo -- kilo
 ```
 
-Standard Node, Bun, Rust, Python, Nix and Git configuration are readable through
+The standalone Kilo installation at `~/.kilo/bin` and standard Node, Bun, Rust,
+Python, Nix and Git configuration are readable through
 nono's runtime groups. Writes to shared toolchain installations and caches may
 need a separately reviewed project profile. The pack inherits nono's default
 system access, including OS temporary/device access and user executable reads.
@@ -99,7 +100,10 @@ The smoke checks use temporary XDG directories beneath the test user's home,
 without replacing HOME or reading existing Kilo login data. They exercise the
 real sandbox, filesystem and environment boundaries, Kilo runtime startup, and
 TUI startup. They do not send a prompt to a paid model. CI runs on Linux and
-macOS with the versions in `versions.json`.
+macOS with the official standalone Kilo distributions in `versions.json`.
+The local Linux checks also cover the npm installation under nvm. Nonstandard
+installation prefixes (including GitHub's hosted Node toolcache) require a
+separately reviewed read grant; the profile does not broadly expose `/opt`.
 
 ## Publishing
 
