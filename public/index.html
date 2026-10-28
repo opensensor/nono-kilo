@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Run and manage local Kilo sessions with the OpenSensor nono sandbox.">
+  <title>OpenSensor · Kilo workspace</title>
+  <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="OpenSensor workspace"><img src="/favicon.svg" alt=""><span>OpenSensor<small>KILO WORKSPACE</small></span></a>
+    <div class="sidebar-label">YOUR MACHINE <span class="online-dot"></span></div>
+    <button class="nav-item active" id="workspace-nav"><span>▦</span> Workspace <span class="nav-arrow">↗</span></button>
+    <button class="nav-item" id="profile-nav"><span>◇</span> Sandbox profile</button>
+    <div class="project-heading"><span>PROJECTS</span><button id="add-project" aria-label="Add project" title="Add project">+</button></div>
+    <label class="search"><span>⌕</span><input id="project-search" type="search" placeholder="Find a project" aria-label="Find a project"></label>
+    <div id="projects" class="project-list" aria-label="Projects"></div>
+    <div class="sidebar-footer"><span class="online-dot" id="connection-dot"></span><div id="connection-label">Connecting locally…<small>127.0.0.1 · stays on this machine</small></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><span class="local-pill"><span class="online-dot"></span> LOCAL ONLY</span></header>
+    <div class="content">
+      <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Kilo, within bounds.</h1><p>Choose a project. Give Kilo a task. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
+      <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>
+      <div class="launch-grid">
+        <section class="card compose-card" aria-labelledby="compose-title">
+          <div class="card-heading"><h2 id="compose-title">Start a task</h2><span class="subtle" id="selected-project-name">Select a project</span></div>
+          <form id="task-form">
+            <label class="sr-only" for="prompt">Task for Kilo</label><textarea id="prompt" maxlength="12000" placeholder="What should Kilo work on? Describe a change, ask a question, or run your tests." required></textarea>
+            <div class="model-row"><div><label for="model">MODEL</label><select id="model"><option value="kilo/kilo-auto/free">Kilo · free router</option></select></div><div class="model-note">Chosen for this run.<br>Your Kilo defaults stay unchanged.</div></div>
+            <label class="custom-model" id="custom-model-wrap" hidden>Model ID<input id="custom-model" placeholder="provider/model"></label>
+            <label class="checkbox-row"><input type="checkbox" id="auto-approve"><span>Auto-approve Kilo tool prompts<small>Sandbox limits still apply. Off by default.</small></span></label>
+            <div class="form-footer"><button type="button" class="text-button" id="demo-prompt">Try the demo prompt ↗</button><button type="submit" class="button primary" id="start-task">Start session <span>→</span></button></div>
+          </form>
+        </section>
+        <section class="card boundary-card" aria-labelledby="boundary-title">
+          <div class="card-heading"><h2 id="boundary-title">Session boundaries</h2><span class="shield">◇</span></div>
+          <div class="scope-label">PROJECT ACCESS</div><div id="scope-path" class="scope-path">Choose a project</div>
+          <dl class="boundaries"><div><dt>Selected project</dt><dd>Read + write</dd></div><div><dt>Kilo config & storage</dt><dd>Read + write</dd></div><div><dt>Outbound network</dt><dd>Allowed</dd></div><div><dt>Environment</dt><dd>Allowlisted</dd></div><div><dt>Access escalation</dt><dd>Disabled</dd></div></dl>
+          <p class="boundary-note">Other project folders are outside this grant. Kilo can use its existing login and provider credentials.</p>
+          <button class="button secondary full-width" id="test-sandbox">✓ &nbsp; Test sandbox boundaries</button>
+          <button class="text-button full-width profile-link" id="profile-link">Inspect the full profile →</button>
+        </section>
+      </div>
+      <section class="sessions-section" aria-labelledby="sessions-title">
+        <div class="section-heading"><h2 id="sessions-title">Sessions <span id="session-count" class="count-pill">0</span></h2><label class="filter-label"><input id="all-projects" type="checkbox"> All projects</label></div>
+        <div class="session-grid card">
+          <div id="sessions" class="session-list" aria-label="Session history"></div>
+          <div class="session-view">
+            <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Start a session to see live output, inspect changes,<br>and keep track of what Kilo is doing.</p></div>
+            <div id="session-content" hidden>
+              <div class="session-heading"><div><div class="session-title" id="session-title"></div><div class="session-subtitle" id="session-subtitle"></div></div><button class="button danger" id="stop-session" hidden>■ &nbsp; Stop</button></div>
+              <div class="output-toolbar"><div class="tabs" role="tablist" aria-label="Session information"><button role="tab" aria-selected="true" data-tab="output">Output</button><button role="tab" aria-selected="false" data-tab="diff">Working tree</button><button role="tab" aria-selected="false" data-tab="details">Details</button></div><button class="text-button" id="download-log" title="Download captured output">↓ Log</button></div>
+              <div class="output-wrap" id="output-panel"><pre id="output" tabindex="0" aria-label="Session output"></pre><div class="waiting" id="waiting" hidden><span class="online-dot"></span> Session is running</div></div>
+              <div id="diff-panel" class="diff-panel" hidden><p id="diff-note" class="info-note"></p><pre id="git-status"></pre><pre id="diff-output" tabindex="0"></pre></div>
+              <div id="details-panel" class="details-panel" hidden></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <footer class="main-footer"><span>OpenSensor community harness <span class="separator">·</span> Local profile v0.1.0</span><span id="footer-runtime">nono + Kilo</span></footer>
+    </div>
+  </main>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="profile-dialog"><div class="dialog-heading"><div><div class="eyebrow">SANDBOX CONFIGURATION</div><h2>OpenSensor Kilo profile</h2></div><button class="icon-button close-dialog" aria-label="Close profile">×</button></div><p class="dialog-description">This local profile controls every dashboard session. It also inherits nono’s default system and runtime access.</p><pre id="profile-json"></pre></dialog>
+  <dialog id="project-dialog"><div class="dialog-heading"><h2>Add a project</h2><button class="icon-button close-dialog" aria-label="Close project dialog">×</button></div><p class="dialog-description">Choose an individual directory inside <code id="workspace-path"></code>.</p><form id="project-form"><label for="project-path">Project directory</label><input id="project-path" required placeholder="/home/matteius/opensensor/my-project"><p class="input-help">Paths are resolved before granting access. The workspace root cannot be selected.</p><button class="button primary" type="submit">Add project →</button></form></dialog>
+</body>
+</html>
