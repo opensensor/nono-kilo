@@ -10,5 +10,10 @@ OpenSensor changes include XDG-aware paths, dedicated Kilo state and temporary
 storage, an explicit inherited-environment allowlist, independent skill and
 profile identity, a launcher, runtime checks, and release automation.
 
+dashboard/ contains the OpenSensor Kilo workspace dashboard, including project
+policies, keyring integration, browser terminals, and runtime network controls.
+It is maintained under this repository's Apache-2.0 license. Its dependencies
+are installed separately through npm and retain their own licenses.
+
 This community-maintained integration is independent of nolabs-ai and Kilo.
 Kilo and nono are separate dependencies and are not distributed in this pack.

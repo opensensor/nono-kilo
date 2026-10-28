@@ -14,6 +14,36 @@ It adds XDG-aware paths, separate Kilo UI state and temporary storage, filtered
 environment inheritance, and independently maintained release checks.
 It does not install Kilo or fork its model/tool execution loop.
 
+## Browser dashboard
+
+The [Kilo workspace dashboard](dashboard/README.md) is maintained in this
+repository under `dashboard/`. It provides project sandbox settings, keyring
+secrets, live terminals with steering, granular Git permissions, network
+visualization, and on-demand network approvals.
+
+On a Linux host with Node.js 22+ (24 recommended), nono and Kilo installed:
+
+```sh
+git clone https://github.com/opensensor/nono-kilo.git
+cd nono-kilo/dashboard
+npm ci
+mkdir -p "$HOME/opensensor"
+OPENSENSOR_NONO="$(command -v nono)" OPENSENSOR_KILO="$(command -v kilo)" npm start
+# In another terminal in the same dashboard directory:
+npm run open
+```
+
+The last command prints the private unlock link. See the
+[dashboard setup guide](dashboard/README.md) for the systemd user service,
+keyring dependencies, LAN access and project configuration. The dashboard
+generates a fresh random unlock key on first start; local sessions, settings,
+keys and keyring contents stay outside the source checkout.
+
+The registry pack remains at the repository root. `nono pull matteius/kilo`
+installs the CLI harness; install the dashboard from this source checkout.
+The dashboard has its own npm manifest and lockfile, while the root
+`package.json` is the nono registry manifest.
+
 ## Run
 
 Install nono 0.80.0 or newer and the Kilo CLI first. The tested versions are
@@ -97,6 +127,8 @@ the workspace. Registry signature checks remain enabled in normal use.
 ```sh
 python3 scripts/validate.py
 NONO_BIN=/path/to/nono KILO_BIN=/path/to/kilo python3 tests/smoke.py
+npm ci --prefix dashboard
+npm test --prefix dashboard
 ```
 
 The smoke checks use temporary XDG directories beneath the test user's home,
@@ -107,6 +139,10 @@ macOS with the official standalone Kilo distributions in `versions.json`.
 The local Linux checks also cover the npm installation under nvm. Nonstandard
 installation prefixes (including GitHub's hosted Node toolcache) require a
 separately reviewed read grant; the profile does not broadly expose `/opt`.
+
+Dashboard CI runs its unit, HTTP and live PTY/WebSocket tests on Linux with
+Node.js 22 and 24. The [dashboard guide](dashboard/README.md#development-and-verification)
+also documents the real-sandbox, keyring and network-approval checks.
 
 ## Publishing
 
