@@ -10,7 +10,11 @@ window.LiveTerminal = class LiveTerminal {
     this.$('terminal-release').onclick = () => this.send({ type: 'release' });
     this.$('terminal-escape').onclick = () => { this.input('\x1b'); this.term?.focus(); };
     this.$('terminal-interrupt').onclick = () => { this.input('\x03'); this.term?.focus(); };
-    this.$('terminal-copy').onclick = async () => { try { const text = this.term?.getSelection(); if (!text) return this.notice('Select text in the terminal first.'); await navigator.clipboard.writeText(text); this.notice('Terminal selection copied.'); } catch { this.notice('Clipboard access was unavailable. Use your browser’s copy shortcut.', true); } };
+    this.$('terminal-copy').onclick = () => this.copy();
+    this.$('terminal-select').onclick = () => this.openCopy();
+    this.$('copy-terminal-text').onclick = () => this.copy(this.$('terminal-copy-text').value);
+    this.$('terminal-focus').onclick = () => this.focusView(!document.body.classList.contains('terminal-focus'));
+    this.focusView(localStorage.getItem('opensensor.terminal.focus') === 'true');
     this.$('terminal-paste').onclick = async () => { if (!this.controls) return; try { const text = await navigator.clipboard.readText(); if (text.length > 24000) throw new Error('Paste at most 24,000 characters at a time.'); this.term.paste(text); this.term.focus(); } catch (error) { this.notice(error.message || 'Use your browser’s paste shortcut.', true); } };
     this.$('terminal-smaller').onclick = () => this.zoom(-1); this.$('terminal-larger').onclick = () => this.zoom(1);
     this.$('terminal-bottom').onclick = () => this.term?.scrollToBottom();
@@ -54,12 +58,26 @@ window.LiveTerminal = class LiveTerminal {
     term.onBinary(data => { if (generation === this.generation && this.controls) this.send({ type: 'input', encoding: 'base64', data: btoa(data) }); });
     term.attachCustomKeyEventHandler(event => {
       if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyF') { this.$('terminal-search').focus(); return false; }
-      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyC') { this.$('terminal-copy').click(); return false; }
+      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.code === 'KeyC' && (event.shiftKey || term.hasSelection())) { event.preventDefault(); this.copy(); return false; }
       return true;
     });
+    this.$('terminal-surface').oncopy = event => { const text = term.getSelection(); if (text) { event.clipboardData?.setData('text/plain', text); event.preventDefault(); } };
   }
   report(data) { return /^\x1b\[[?>=]?[\d;:]*[cnR]$/.test(data) || /^\x1b\](?:10|11|12);/.test(data) || /^\x1bP[>01]/.test(data); }
   fullscreenLabel() { this.$('terminal-fullscreen').textContent = document.fullscreenElement || this.$('output-panel').classList.contains('expanded') ? '⛶ Exit full screen' : '⛶ Full screen'; }
+  focusView(enabled) { document.body.classList.toggle('terminal-focus', enabled); localStorage.setItem('opensensor.terminal.focus', enabled); this.$('terminal-focus').textContent = enabled ? '↙ Exit focus view' : '↗ Focus view'; this.$('terminal-focus').setAttribute('aria-pressed', String(enabled)); this.fit(); }
+  screenText(scrollback = false) {
+    if (!this.term) return ''; const buffer = this.term.buffer.active, start = scrollback ? 0 : buffer.viewportY, end = scrollback ? buffer.length : Math.min(buffer.length, start + this.term.rows);
+    return Array.from({ length: end - start }, (_, i) => (buffer.getLine(start + i)?.translateToString(true, 0, this.term.cols) || '')).join('\n').trimEnd();
+  }
+  openCopy(value = this.term?.getSelection() || this.screenText(true)) {
+    this.$('terminal-copy-text').value = value; if (!this.$('terminal-copy-dialog').open) this.$('terminal-copy-dialog').showModal(); this.$('terminal-copy-text').focus(); this.$('terminal-copy-text').select();
+  }
+  async copy(value) {
+    const selected = this.term?.getSelection(), text = value ?? (selected || this.screenText()); if (!text) return this.notice('There is no terminal text to copy yet.');
+    try { await navigator.clipboard.writeText(text); this.notice(value ? 'Text copied.' : selected ? 'Terminal selection copied.' : 'Visible terminal screen copied.'); }
+    catch { this.openCopy(text); this.notice('Text is selected. Press Ctrl+C or ⌘C to copy.'); }
+  }
   send(message) { if (this.ws?.readyState !== WebSocket.OPEN || !this.ready) return false; this.ws.send(JSON.stringify(message)); return true; }
   input(data) {
     if (!this.controls || !this.ready || this.ws?.readyState !== WebSocket.OPEN) return false;
@@ -123,7 +141,10 @@ window.LiveTerminal = class LiveTerminal {
       if (message.type === 'snapshot') {
         this.clientId = message.clientId; this.sequence = message.sequence; this.ready = true; this.attempts = 0;
         this.term.options.convertEol = !message.interactive; this.term.resize(message.cols, message.rows);
-        this.term.write(message.data, () => { if (generation === this.generation) { this.send({ type: 'ack', sequence: message.sequence }); this.find(false); } });
+        // xterm's serializer omits the SGR mouse encoding. Older dashboard
+        // sessions are Kilo TUIs, which explicitly enable DEC mode 1006.
+        const mouseEncoding = message.mouseEncoding ?? (message.interactive ? '\x1b[?1006h' : '');
+        this.term.write(message.data + mouseEncoding, () => { if (generation === this.generation) { this.send({ type: 'ack', sequence: message.sequence }); this.find(false); } });
         this.update(message); this.$('terminal-status').textContent = 'Live stream'; this.$('terminal-dot').classList.remove('offline');
         if (message.interactive && ['starting', 'running'].includes(message.status) && !message.controller) this.send({ type: 'control' });
         clearInterval(this.pingTimer); this.pingTimer = setInterval(() => this.send({ type: 'ping', at: Date.now() }), 5000);
