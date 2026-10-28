@@ -5,6 +5,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { RequestError, readJSON, atomicJSON, inside } from './core.mjs';
 import { gitDefaults, normalizeGit, compileGit, parseGitRemote } from './git-policy.mjs';
+import { HARNESSES, validateHarness, validateOptionalModel } from './harnesses.mjs';
 
 export const projectId = project => createHash('sha256').update(project).digest('hex').slice(0, 20);
 export const isWsl2 = () => process.platform === 'linux' && (existsSync('/proc/sys/fs/binfmt_misc/WSLInterop') || /microsoft|wsl/i.test(readFileSync('/proc/version', 'utf8')));
@@ -14,7 +15,7 @@ export const wsl2ProxyUnsupported = () => {
   return !version || Number(version[1]) < 6 || (Number(version[1]) === 6 && Number(version[2]) < 7);
 };
 export const defaults = () => ({
-  schemaVersion: 1, defaultModel: 'kilo/kilo-auto/free', autoApprove: false,
+  schemaVersion: 1, harness: 'kilo', defaultModel: 'kilo/kilo-auto/free', nativeModels: { claude: '', codex: '' }, autoApprove: false,
   projectAccess: 'readwrite', storage: 'shared', runtimes: ['python', 'bun', 'rust', 'nix', 'git'],
   extraPaths: [], denyPaths: [], network: { mode: 'unrestricted', allowDomains: [], denyDomains: [], connectPorts: [], listenPorts: [] },
   environment: { inherit: [], variables: {} }, secrets: [], git: gitDefaults(),
@@ -37,12 +38,12 @@ export function validateModel(model) {
   return model;
 }
 
-export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, execute, nono, kilo, secretStore, home = os.homedir(), wsl2 = isWsl2(), proxyUnsupported = wsl2 && wsl2ProxyUnsupported() }) {
+export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, execute, nono, kilo, claude, codex, secretStore, home = os.homedir(), wsl2 = isWsl2(), proxyUnsupported = wsl2 && wsl2ProxyUnsupported() }) {
   const file = path.join(stateDir, 'project-settings.json');
   const profileDir = path.join(configDir, 'nono/profiles');
   // Keep controller code, credentials, authentication and future policy revisions outside agent grants.
   const protectedRoots = [sourceDir, stateDir, path.join(configDir, 'nono'), path.join(configDir, 'systemd'),
-    path.join(home, '.local/share/keyrings'), path.join(home, '.ssh'), path.join(home, '.gnupg'), path.join(home, '.codex'), path.join(home, '.agents')].filter(Boolean);
+    path.join(home, '.local/share/keyrings'), path.join(home, '.ssh'), path.join(home, '.gnupg'), path.join(home, '.codex'), path.join(home, '.agents'), path.join(home, '.claude'), path.join(home, '.claude.json')].filter(Boolean);
   const overlap = candidate => protectedRoots.some(root => inside(root, candidate) || inside(candidate, root));
   const executableRoots = [...new Set((process.env.PATH || '').split(path.delimiter).filter(Boolean).map(p => { try { return realpathSync(p); } catch { return path.resolve(p); } }))];
   // A PATH entry can be a symlink into a package tree. Protect writable runtime
@@ -81,10 +82,14 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
     for (const key of Object.keys(body)) if (!(key in d)) throw new RequestError(`Unsupported settings field: ${key}`);
     const v = { ...d, ...body };
     choose(v.schemaVersion, [1], 'settings schema version');
-    const result = { schemaVersion: 1, defaultModel: validateModel(v.defaultModel), autoApprove: bool(v.autoApprove, 'Auto approval'),
-      projectAccess: choose(v.projectAccess, ['read', 'readwrite'], 'project access'), storage: choose(v.storage, ['shared', 'isolated'], 'Kilo storage'),
+    const harness = validateHarness(v.harness);
+    const nativeModels = { ...d.nativeModels, ...v.nativeModels };
+    if (!v.nativeModels || typeof v.nativeModels !== 'object' || Array.isArray(v.nativeModels) || Object.keys(v.nativeModels).some(key => !['claude', 'codex'].includes(key))) throw new RequestError('Invalid native model settings.');
+    const result = { schemaVersion: 1, harness, defaultModel: validateModel(v.defaultModel), nativeModels: { claude: validateOptionalModel(nativeModels.claude), codex: validateOptionalModel(nativeModels.codex) }, autoApprove: bool(v.autoApprove, 'Auto approval'),
+      projectAccess: choose(v.projectAccess, ['read', 'readwrite'], 'project access'), storage: choose(v.storage, ['shared', 'isolated'], 'runtime storage'),
       runtimes: strings(v.runtimes, 'runtimes').map(r => choose(r, ['python', 'bun', 'rust', 'nix', 'git'], 'runtime')),
       extraPaths: [], denyPaths: [], network: {}, environment: { inherit: [], variables: {} }, secrets: [], limits: {}, allowGpu: bool(v.allowGpu, 'GPU access'), rollback: {} };
+    if (harness !== 'kilo' && result.storage === 'isolated') throw new RequestError('Claude Code and Codex CLI currently require shared runtime storage. Choose Shared or select Kilo.');
     if (overlap(project)) throw new RequestError('Dashboard controller files cannot be used as a sandbox project.');
     for (const grant of list(v.extraPaths, 'Additional paths', 24)) {
       const real = await safePath(grant.path, project);
@@ -164,27 +169,34 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
     return result;
   }
 
-  function compile(project, s, revision) {
+  function compile(project, s, revision, harness = s.harness || 'kilo') {
+    validateHarness(harness);
+    if (harness !== 'kilo' && s.storage === 'isolated') throw new RequestError('Claude Code and Codex CLI require shared runtime storage.');
     const restricted = ['restricted', 'approval'].includes(s.network.mode);
     const id = projectId(project);
     const isolated = path.join(home, '.local/share/opensensor-kilo-projects', id);
     const dirs = s.storage === 'isolated'
       ? { config: path.join(isolated, 'config'), data: path.join(isolated, 'data'), cache: path.join(isolated, 'cache'), state: path.join(isolated, 'state') }
-      : { config: configDir, data: process.env.XDG_DATA_HOME || path.join(home, '.local/share'), cache: process.env.XDG_CACHE_HOME || path.join(home, '.cache'), state: path.join(home, '.local/state/opensensor-kilo') };
-    const allow = [path.join(dirs.config, 'kilo'), path.join(dirs.data, 'kilo'), path.join(dirs.cache, 'kilo'), dirs.state];
-    const kiloCandidate = kilo && (path.isAbsolute(kilo) ? kilo : (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, kilo)).find(existsSync));
-    let kiloReadDir = '';
-    try { const executable = realpathSync(kiloCandidate); if (inside(home, executable)) kiloReadDir = path.dirname(executable); } catch {}
-    const profile = { extends: 'default', meta: { name: `opensensor-${id}-r${revision}`, version: '1.0.0', description: `Project policy for ${path.basename(project)} · revision ${revision}`, author: 'OpenSensor' },
+      : { config: configDir, data: process.env.XDG_DATA_HOME || path.join(home, '.local/share'), cache: process.env.XDG_CACHE_HOME || path.join(home, '.cache'), state: path.join(home, '.local/state', harness === 'kilo' ? 'opensensor-kilo' : `opensensor-${harness}`) };
+    const allow = harness === 'kilo' ? [path.join(dirs.config, 'kilo'), path.join(dirs.data, 'kilo'), path.join(dirs.cache, 'kilo'), dirs.state] : [dirs.state];
+    const tempDir = path.join(dirs.cache, 'opensensor-runtime', harness, 'tmp');
+    allow.push(tempDir);
+    const binary = { kilo, claude, codex }[harness];
+    const candidate = binary && (path.isAbsolute(binary) ? binary : (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, binary)).find(existsSync));
+    let binaryReadDir = '';
+    try { const executable = realpathSync(candidate); if (inside(home, executable)) binaryReadDir = path.dirname(executable); } catch {}
+    const packPaths = harness === 'codex' ? [path.join(home, '.codex'), path.join(home, '.agents')] : harness === 'claude' ? [path.join(home, '.claude'), path.join(home, '.claude.json')] : [];
+    const denied = protectedRoots.filter(root => existsSync(root) && (harness === 'kilo' || root !== path.join(configDir, 'nono')) && !packPaths.includes(root));
+    const profile = { extends: HARNESSES[harness].profile, meta: { name: `opensensor-${id}-r${revision}`, version: '1.0.0', description: `${HARNESSES[harness].name} policy for ${path.basename(project)} · revision ${revision}`, author: 'OpenSensor' },
       groups: { include: ['node_runtime', ...s.runtimes.filter(r => r !== 'git' || s.git?.enabled === false).map(r => r === 'git' ? 'git_config' : `${r}_runtime`), { name: 'linux_sysfs_read', when: 'linux' }, 'unlink_protection'] },
       security: { signal_mode: 'isolated', process_info_mode: 'isolated', capability_elevation: false },
       linux: { af_unix_mediation: wsl2 ? 'off' : 'pathname' },
-      filesystem: { allow, read: kiloReadDir ? [kiloReadDir] : [], allow_file: [], read_file: [], deny: [...s.denyPaths, ...protectedRoots.filter(existsSync)] }, workdir: { access: s.projectAccess },
+      filesystem: { allow, read: binaryReadDir ? [binaryReadDir] : [], allow_file: [], read_file: [], deny: [...s.denyPaths, ...denied] }, workdir: { access: s.projectAccess },
       network: { block: s.network.mode === 'blocked', ...(restricted ? { allow_domain: s.network.allowDomains, deny_domain: s.network.denyDomains, connect_port: s.network.connectPorts, listen_port: s.network.listenPorts } : {}) },
-      environment: { allow_vars: [...BASE_ENV, ...s.environment.inherit], set_vars: { XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state, TMPDIR: path.join(dirs.cache, 'kilo/tmp'), KILO_DISABLE_AUTOUPDATE: 'true', ...s.environment.variables } },
+      environment: { allow_vars: [...BASE_ENV, ...s.environment.inherit], set_vars: { XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state, TMPDIR: tempDir, ...(harness === 'kilo' ? { KILO_DISABLE_AUTOUPDATE: 'true' } : {}), ...s.environment.variables } },
       env_credentials: {}, diagnostics: { redaction: { extra_env_vars: s.secrets.map(b => b.env) } },
       open_urls: { allow_origins: [], allow_localhost: false }, allow_launch_services: false, allow_gpu: s.allowGpu,
-      // Snapshot project work, not Kilo's shared login, large databases or caches.
+      // Snapshot project work, not shared runtime state, large databases or caches.
       rollback: { exclude_patterns: [...s.rollback.exclude, ...allow], exclude_globs: ['*.tmp.[0-9]*.[0-9]*'] } };
     // A restricted policy with no routes means no outbound traffic; never silently fall back to unrestricted.
     if (restricted && !s.network.allowDomains.length && !s.secrets.some(b => b.mode === 'proxy')) profile.network.block = true;
@@ -202,23 +214,23 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
         (profile.network.custom_credentials ||= {})[b.route] = { upstream: b.upstream, credential_key: key, env_var: b.env, inject_header: b.header, credential_format: b.format, ...(b.endpoints.length ? { endpoint_rules: b.endpoints } : {}) };
       }
     }
-    if (s.provider?.enabled) {
+    if (harness === 'kilo' && s.provider?.enabled) {
       const p = s.provider;
       const baseURL = p.proxyRoute ? `{env:${p.proxyRoute.toUpperCase()}_BASE_URL}` : p.baseURL;
       profile.environment.set_vars.KILO_CONFIG_CONTENT = JSON.stringify({ provider: { [p.id]: { npm: '@ai-sdk/openai-compatible', name: `Project · ${p.id}`, options: { baseURL, ...(p.secretEnv ? { apiKey: `{env:${p.secretEnv}}` } : {}) }, models: { [p.model]: { name: p.model, limit: { context: p.context, output: p.output } } } } } });
     }
-    return { profile, dirs, profileName: profile.meta.name };
+    return { profile, dirs, profileName: profile.meta.name, harness };
   }
 
-  async function build(project, settings, revision, prepare = false) {
-    const policy = compile(project, settings, revision);
+  async function build(project, settings, revision, prepare = false, harness = settings.harness || 'kilo') {
+    const policy = compile(project, settings, revision, harness);
     const git = await compileGit(project, settings, { home, configDir });
-    if (git) policy.profile.command_policies = { ...git, executable_dirs: await kiloExecutableDirs() };
+    if (git) policy.profile.command_policies = { ...git, executable_dirs: harness === 'kilo' ? await kiloExecutableDirs() : policy.profile.filesystem.read };
     for (const grant of settings.extraPaths) {
       const stats = await fs.stat(grant.path); const type = grant.access === 'read' ? 'read' : 'allow';
       policy.profile.filesystem[stats.isDirectory() ? type : `${type}_file`].push(grant.path);
     }
-    if (prepare) for (const dir of [...policy.profile.filesystem.allow.slice(0, 4), policy.profile.environment.set_vars.TMPDIR]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (prepare) for (const dir of policy.profile.filesystem.allow) mkdirSync(dir, { recursive: true, mode: 0o700 });
     return policy;
   }
 
@@ -253,10 +265,10 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
       return { ...record, profile: validated.profile, profileName: validated.profileName };
     },
     async describe(project) { const record = get(project); return { ...record, ...await build(project, record.settings, record.revision) }; },
-    async launch(project, secretValues, { networkApproval } = {}) {
+    async launch(project, secretValues, { networkApproval, harness } = {}) {
       const record = get(project); const normalized = await normalize(project, record.settings);
       if (!secretValues && normalized.secrets.length) secretValues = await secretStore.resolve(normalized.secrets.map(b => b.secretId));
-      const policy = await build(project, normalized, record.revision, true);
+      const policy = await build(project, normalized, record.revision, true, harness || normalized.harness);
       if (normalized.network.mode === 'approval') {
         if (!networkApproval) throw new RequestError('Start this project in the dashboard to answer its network approvals.');
         const address = await networkApproval(normalized);

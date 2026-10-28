@@ -50,6 +50,7 @@ function addBinding(binding = {}) {
   row.addEventListener('input', update); row.addEventListener('change', update); $('bindings-list').append(row); update();
 }
 function fillSettings(s) {
+  $('s-harness').value = s.harness || 'kilo'; $('s-claude-model').value = s.nativeModels?.claude || ''; $('s-codex-model').value = s.nativeModels?.codex || '';
   $('s-model').value = s.defaultModel; $('s-auto').checked = s.autoApprove; $('s-storage').value = s.storage;
   const p = s.provider || state.defaults.provider;
   $('s-provider-enabled').checked = p.enabled; $('s-provider-id').value = p.id; $('s-provider-model').value = p.model;
@@ -79,7 +80,7 @@ function captureSettings() {
     if (binding.mode === 'proxy') Object.assign(binding, { route: get('route'), upstream: get('upstream'), header: get('header'), format: get('format'), endpoints: lines(get('endpoints')).map(line => { const match = line.match(/^(\S+)\s+(\S+)$/); if (!match) throw new Error('Endpoint rules use METHOD /path, one per line.'); return { method: match[1].toUpperCase(), path: match[2] }; }) });
     return binding;
   });
-  return { schemaVersion: 1, defaultModel: $('s-model').value.trim(), autoApprove: $('s-auto').checked, storage: $('s-storage').value, projectAccess: $('s-access').value,
+  return { schemaVersion: 1, harness: $('s-harness').value, defaultModel: $('s-model').value.trim(), nativeModels: { claude: $('s-claude-model').value.trim(), codex: $('s-codex-model').value.trim() }, autoApprove: $('s-auto').checked, storage: $('s-storage').value, projectAccess: $('s-access').value,
     extraPaths: [...$('grants-list').children].map(row => ({ path: row.querySelector('input').value.trim(), access: row.querySelector('select').value })), denyPaths: lines($('s-deny').value), runtimes: [...document.querySelectorAll('[name=runtime]:checked')].map(c => c.value),
     network: { mode: $('s-network').value, allowDomains: lines($('s-domains').value), denyDomains: lines($('s-deny-domains').value), connectPorts: ports($('s-connect').value), listenPorts: ports($('s-listen').value) },
     environment: { inherit: lines($('s-inherit').value), variables }, secrets: bindings,
@@ -92,21 +93,27 @@ function captureSettings() {
     rollback: { enabled: $('s-rollback').checked, exclude: lines($('s-exclude').value) } };
 }
 function conditionalFields() {
+  const harness = $('s-harness').value;
+  $('kilo-settings').hidden = harness !== 'kilo'; $('native-settings').hidden = harness === 'kilo';
+  $('s-provider-enabled').closest('label').hidden = harness !== 'kilo';
+  $('s-storage').querySelector('[value=isolated]').disabled = harness !== 'kilo';
+  if (harness !== 'kilo' && $('s-storage').value === 'isolated') $('s-storage').value = 'shared';
   $('git-fields').hidden = !$('s-git-enabled').checked;
   document.querySelector('[name=runtime][value=git]').disabled = $('s-git-enabled').checked;
   $('git-key-field').hidden = $('s-git-auth').value !== 'key'; $('git-agent-field').hidden = $('s-git-auth').value !== 'agent';
   const provider = $('s-provider-enabled').checked;
-  $('provider-fields').hidden = !provider; $('provider-direct').hidden = Boolean($('s-provider-route').value.trim()); $('s-model').disabled = provider;
+  $('provider-fields').hidden = !provider || harness !== 'kilo'; $('provider-direct').hidden = Boolean($('s-provider-route').value.trim()); $('s-model').disabled = provider;
   if (provider && $('s-provider-id').value && $('s-provider-model').value) $('s-model').value = `${$('s-provider-id').value.trim()}/${$('s-provider-model').value.trim()}`;
   const mode = $('s-network').value;
   $('network-rules').hidden = !['restricted', 'approval'].includes(mode);
   $('network-note').textContent = { unrestricted: 'The agent can reach the internet and local network. Filesystem restrictions still apply.', blocked: 'No network connections. Remote AI models will not work in this mode; use it for local boundary checks and offline commands.', restricted: 'Only allowed domains, credential routes and explicit ports are reachable. An empty rule set blocks outbound connections.', approval: 'New destinations wait for your decision in the dashboard. Allow once permits one connection; Allow for session remembers that exact host and port until the session ends. Deny blocks that destination for this session. Requests expire after 5 minutes. The runtime clock pauses while a decision is pending. Saved allow rules and credential routes proceed automatically; saved deny rules stay blocked. Direct TCP ports bypass these prompts. Unix sockets such as Docker still require separate sandbox permissions. Applies to new dashboard sessions.' }[mode] + (state.runtime?.proxyUnsupported ? ' This WSL2 kernel cannot enforce restricted or approval networking; choose Unrestricted or Blocked.' : '');
-  $('storage-note').textContent = $('s-storage').value === 'shared' ? 'Uses your existing Kilo login, settings, session data and provider credentials. These files are readable and writable by this project’s agent.' : 'Creates separate config, data, cache and state directories. Existing Kilo login and providers are not copied. Supply provider credentials through secret bindings or configure this project’s Kilo storage.';
+  $('storage-note').textContent = harness === 'kilo' ? ($('s-storage').value === 'shared' ? 'Uses your existing Kilo login, settings, session data and provider credentials. These files are readable and writable by this project’s agent.' : 'Creates separate config, data, cache and state directories. Existing Kilo login and providers are not copied. Supply provider credentials through secret bindings or configure this project’s Kilo storage.') : 'Claude Code and Codex CLI use the existing machine login and configuration supplied by their nono registry packs.';
 }
 function renderPolicySummary() {
   const record = state.policy; if (!record) return; const s = record.settings;
-  $('scope-summary').replaceChildren(...Object.entries({ 'Selected project': s.projectAccess === 'read' ? 'Read only' : 'Read + write', 'Kilo storage': s.storage === 'shared' ? 'Shared login & config' : 'Separate per project', 'Network': { unrestricted: 'Allowed', restricted: 'Restricted', approval: 'Ask on new destinations', blocked: 'Blocked' }[s.network.mode], 'Bound secrets': `${s.secrets.length} explicit bindings`, 'Run time limit': `${s.limits.timeoutMinutes} minutes`, 'Access escalation': 'Disabled' }).map(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', '', value)); return row; }));
-  $('scope-note').textContent = `Policy ${record.revision ? `revision ${record.revision}` : 'defaults'} · ${s.extraPaths.length} extra path grants. ${s.storage === 'shared' ? 'Includes existing Kilo provider credentials.' : 'Existing machine credentials are not copied.'}`;
+  const labels = { kilo: 'Kilo', claude: 'Claude Code', codex: 'Codex CLI' }; const selected = s.harness || 'kilo';
+  $('scope-summary').replaceChildren(...Object.entries({ 'Default agent': labels[selected], 'Selected project': s.projectAccess === 'read' ? 'Read only' : 'Read + write', 'Agent storage': s.storage === 'shared' ? 'Shared login & config' : 'Separate per project', 'Network': { unrestricted: 'Allowed', restricted: 'Restricted', approval: 'Ask on new destinations', blocked: 'Blocked' }[s.network.mode], 'Bound secrets': `${s.secrets.length} explicit bindings`, 'Run time limit': `${s.limits.timeoutMinutes} minutes`, 'Access escalation': 'Disabled' }).map(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', '', value)); return row; }));
+  $('scope-note').textContent = `Policy ${record.revision ? `revision ${record.revision}` : 'defaults'} · ${s.extraPaths.length} extra path grants. ${s.storage === 'shared' ? 'Includes the selected agent’s existing configuration and credentials.' : 'Existing machine credentials are not copied.'}`;
   $('settings-project').textContent = state.project; $('settings-revision').textContent = record.revision ? `Revision ${record.revision}` : 'Unsaved defaults';
   $('policy-preview').textContent = JSON.stringify(record.profile, null, 2); state.preview = record.profile;
   $('policy-history').replaceChildren(...(record.history || []).slice().reverse().map(r => new Option(`Revision ${r.revision}${r.updatedAt ? ` · ${new Date(r.updatedAt).toLocaleString()}` : ' · initial defaults'}`, r.revision)));
@@ -114,13 +121,14 @@ function renderPolicySummary() {
   renderModels();
   const option = [...$('model').options].find(o => o.value === s.defaultModel);
   $('model').value = option ? s.defaultModel : 'custom'; $('custom-model').value = s.defaultModel; $('custom-model-wrap').hidden = Boolean(option); $('auto-approve').checked = s.autoApprove;
+  $('harness').value = selected; $('native-model').value = s.nativeModels?.[selected] || ''; updateLauncherHarness();
 }
 async function loadProjectSettings(project) {
   state.policyProject = null; $('save-settings').disabled = true;
   const [policy, vault] = await Promise.all([api(`/api/project-settings?project=${encodeURIComponent(project)}`), api('/api/secrets')]);
   if (project !== state.project) return;
   state.policy = policy; state.policyProject = project; state.vault = vault.secrets; fillSettings(policy.settings); clean(); renderPolicySummary(); $('save-settings').disabled = false;
-  $('start-task').disabled = false; $('test-sandbox').disabled = false;
+  $('test-sandbox').disabled = false; updateLauncherHarness();
 }
 async function refreshVault() {
   const [vault, audit] = await Promise.all([api('/api/secrets'), api('/api/audit')]); state.vault = vault.secrets;
@@ -147,7 +155,7 @@ function openSecret(secret) {
 }
 document.querySelectorAll('[data-settings-tab]').forEach(button => button.onclick = () => settingsTab(button.dataset.settingsTab));
 $('settings-form').addEventListener('input', dirty); $('settings-form').addEventListener('change', dirty);
-$('s-network').addEventListener('change', conditionalFields); $('s-storage').addEventListener('change', conditionalFields);
+$('s-network').addEventListener('change', conditionalFields); $('s-storage').addEventListener('change', conditionalFields); $('s-harness').addEventListener('change', conditionalFields);
 for (const id of ['s-git-enabled', 's-git-auth', 's-provider-enabled', 's-provider-id', 's-provider-model', 's-provider-route']) $(id).addEventListener('input', conditionalFields);
 $('add-grant').onclick = () => { addGrant(); dirty(); };
 $('add-binding').onclick = () => { if (!state.vault.length) return toast('Add a stored secret in Secrets, then bind it here.', true); addBinding(); dirty(); };

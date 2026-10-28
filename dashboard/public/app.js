@@ -1,5 +1,19 @@
 const $ = id => document.getElementById(id);
 const state = { projects: [], sessions: [], project: '', selected: null, tab: 'output', detail: null, busy: false, sessionHash: '', authenticated: false };
+const harnessLabels = { kilo: 'Kilo', claude: 'Claude Code', codex: 'Codex CLI' };
+function updateLauncherHarness() {
+  const harness = $('harness').value, native = harness !== 'kilo';
+  $('kilo-model-row').hidden = native; $('custom-model-wrap').hidden = native || $('model').value !== 'custom'; $('native-model-wrap').hidden = !native;
+  if (state.launcherHarness !== harness) $('native-model').value = state.policy?.settings?.nativeModels?.[harness] || '';
+  state.launcherHarness = harness;
+  $('native-model').placeholder = `Leave blank for ${harnessLabels[harness]}’s default model`;
+  $('prompt').placeholder = $('run-mode').value === 'batch' ? `Describe the task ${harnessLabels[harness]} should complete in this run.` : `Give ${harnessLabels[harness]} an initial task, or leave empty to open its interactive terminal.`;
+  $('auto-approve').closest('label').querySelector('small').textContent = harness === 'codex' && $('run-mode').value === 'batch' ? 'Required for Codex batch tasks. The nono sandbox limits still apply.' : 'The nono sandbox limits still apply. Off by default.';
+  const available = !state.runtime || state.runtime[harness] !== 'Unavailable';
+  $('start-task').disabled = !available || state.policyProject !== state.project;
+  $('start-task').title = available ? '' : `${harnessLabels[harness]} is not installed or not on the dashboard service PATH.`;
+  $('scope-note').title = native && state.policy?.settings?.storage === 'isolated' ? 'Native agents require Shared storage. Change Project settings before launching.' : '';
+}
 let toastTimer;
 let pollTimer;
 const liveTerminal = new LiveTerminal({ notice: toast, onState: (id, message) => {
@@ -73,7 +87,7 @@ function renderSessions() {
     button.setAttribute('aria-label', `${session.status}: ${session.prompt}`);
     const heading = element('div', 'session-item-heading');
     heading.append(element('span', `status-pill ${session.pendingApprovals ? 'approval-pending' : session.status}`, session.pendingApprovals ? 'Needs approval' : session.status), element('time', 'session-time', timeLabel(session.startedAt)));
-    button.append(heading, element('div', 'session-item-title', session.prompt), element('div', 'session-item-meta', session.kind === 'check' ? '◇ sandbox check' : `${session.interactive ? '⌘ terminal' : '↗ batch'} · ${session.projectName}`));
+    button.append(heading, element('div', 'session-item-title', session.prompt), element('div', 'session-item-meta', session.kind === 'check' ? '◇ sandbox check' : `${harnessLabels[session.harness || 'kilo']} · ${session.interactive ? '⌘ terminal' : '↗ batch'} · ${session.projectName}`));
     button.addEventListener('click', () => selectSession(session.id)); return button;
   }));
 }
@@ -90,7 +104,7 @@ async function refreshDetail() {
   const detail = await api(`/api/sessions/${id}?output=0`); if (id !== state.selected) return;
   state.detail = detail;
   $('session-title').textContent = detail.prompt;
-  $('session-subtitle').textContent = `${detail.status.toUpperCase()}  ·  ${detail.name}  ·  ${detail.model}`;
+  $('session-subtitle').textContent = `${detail.status.toUpperCase()}  ·  ${harnessLabels[detail.harness || 'kilo']}  ·  ${detail.name}  ·  ${detail.model}`;
   $('stop-session').hidden = !active(detail.status);
   $('stop-session').disabled = detail.status === 'stopping';
   $('waiting').hidden = !active(detail.status);
@@ -108,7 +122,7 @@ async function loadTranscript() {
 function renderDetails() {
   if (!state.detail) return;
   const s = state.detail; const dl = element('dl');
-  for (const [key, value] of Object.entries({ Project: s.project, Model: s.model, Profile: s.profileName || 'opensensor-kilo-local', 'Policy revision': s.policyRevision ?? 'Legacy profile', Status: s.status, Started: new Date(s.startedAt).toLocaleString(), 'nono session': s.nonoId || 'Starting…', 'Tool prompts': s.autoApprove ? 'Auto-approve enabled' : 'Kilo defaults', 'Bound secrets': s.secretVersions?.map(s => `${s.name} · v${s.version} · ${s.mode}`).join('\n') || 'None', Task: s.prompt })) {
+  for (const [key, value] of Object.entries({ Project: s.project, Agent: harnessLabels[s.harness || 'kilo'], Model: s.model, Profile: s.profileName || 'opensensor-kilo-local', 'Policy revision': s.policyRevision ?? 'Legacy profile', Status: s.status, Started: new Date(s.startedAt).toLocaleString(), 'nono session': s.nonoId || 'Starting…', 'Tool prompts': s.autoApprove ? 'Auto-approve enabled' : 'Ask when needed', 'Bound secrets': s.secretVersions?.map(s => `${s.name} · v${s.version} · ${s.mode}`).join('\n') || 'None', Task: s.prompt })) {
     dl.append(element('dt', '', key), element('dd', '', value));
   }
   $('details-panel').replaceChildren(dl);
@@ -134,10 +148,11 @@ async function launch(kind) {
   if (!state.project) return toast('Choose a project first.', true);
   button.disabled = true;
   try {
-    const model = $('model').value === 'custom' ? $('custom-model').value.trim() : $('model').value;
-    const result = await api('/api/sessions', { kind, project: state.project, model, prompt: $('prompt').value, autoApprove: $('auto-approve').checked, interactive: kind !== 'check' && $('run-mode').value === 'interactive' });
+    const harness = $('harness').value;
+    const model = harness === 'kilo' ? ($('model').value === 'custom' ? $('custom-model').value.trim() : $('model').value) : $('native-model').value.trim();
+    const result = await api('/api/sessions', { kind, project: state.project, harness, model, prompt: $('prompt').value, autoApprove: $('auto-approve').checked, interactive: kind !== 'check' && $('run-mode').value === 'interactive' });
     state.sessions.unshift(result); state.tab = 'output'; switchTab('output'); await selectSession(result.id); await refresh();
-    toast(kind === 'check' ? 'Sandbox check started.' : 'Kilo session started.');
+    toast(kind === 'check' ? 'Sandbox check started.' : `${harnessLabels[harness]} session started.`);
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 function switchTab(tab) {
@@ -152,11 +167,12 @@ function switchTab(tab) {
 }
 $('task-form').addEventListener('submit', event => { event.preventDefault(); launch('task'); });
 document.querySelectorAll('[data-open-launcher]').forEach(button => button.addEventListener('click', openLauncher));
-$('run-mode').addEventListener('change', () => { $('prompt').required = $('run-mode').value === 'batch'; $('prompt').placeholder = $('prompt').required ? 'Describe the task Kilo should complete in this run.' : 'Give Kilo an initial task, or leave empty to open its interactive terminal.'; });
+$('run-mode').addEventListener('change', () => { $('prompt').required = $('run-mode').value === 'batch'; updateLauncherHarness(); });
+$('harness').addEventListener('change', updateLauncherHarness);
 $('test-sandbox').addEventListener('click', () => launch('check'));
 $('project-search').addEventListener('input', renderProjects);
 $('all-projects').addEventListener('change', () => { state.sessionHash = ''; renderSessions(); });
-$('model').addEventListener('change', () => { $('custom-model-wrap').hidden = $('model').value !== 'custom'; });
+$('model').addEventListener('change', updateLauncherHarness);
 $('stop-session').addEventListener('click', async () => {
   if (!state.selected) return; $('stop-session').disabled = true;
   try { await api(`/api/sessions/${state.selected}/stop`, {}); await refresh(); toast('Session stopped.'); }
@@ -176,7 +192,7 @@ $('demo-prompt').addEventListener('click', async () => {
   if (state.settingsDirty || state.settingsSaving) return toast('Save or discard the settings draft first.', true);
   const demo = state.projects.find(p => p.demo); if (demo) await selectProject(demo.path);
   $('prompt').value = 'Read sensor.py and test_sensor.py. Run python3 -m unittest -v and briefly explain the temperature conversion and test results. Do not modify files or use subagents.';
-  $('model').value = 'kilo/kilo-auto/free'; $('custom-model-wrap').hidden = true; $('prompt').focus();
+  $('harness').value = 'kilo'; $('model').value = 'kilo/kilo-auto/free'; updateLauncherHarness(); $('prompt').focus();
 });
 $('terminal-command').addEventListener('click', async () => {
   try { const result = await api('/api/project-command', { project: state.project }); await navigator.clipboard.writeText(result.command); toast('Copied terminal command using the saved project policy. Dashboard time limits apply only to dashboard runs.'); }
@@ -217,10 +233,11 @@ async function boot() {
     if (access) { history.replaceState(null, '', location.pathname); await api('/api/auth', { token: access }); }
     const data = await api('/api/bootstrap'); state.projects = data.projects; state.sessions = data.sessions;
     state.authenticated = true; state.defaults = data.defaultSettings; state.runtime = data.runtime; $('login-dialog').close();
+    for (const [name, label] of Object.entries(harnessLabels)) { const option = $('harness').querySelector(`[value=${name}]`); option.disabled = data.runtime[name] === 'Unavailable'; option.textContent = option.disabled ? `${label} · unavailable` : label; }
     $('runtime-name').textContent = data.runtime.ready ? 'nono ready' : 'Runtime unavailable';
-    $('runtime-detail').textContent = `${data.runtime.nono} · Kilo ${data.runtime.kilo}`;
+    $('runtime-detail').textContent = `${data.runtime.nono} · ${Object.entries(harnessLabels).filter(([key]) => data.runtime[key] !== 'Unavailable').map(([, name]) => name).join(', ') || 'No agent CLI'}`;
     $('git-wsl-note').hidden = !data.runtime.wsl2;
-    $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · Kilo ${data.runtime.kilo}`;
+    $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · ${Object.entries(harnessLabels).filter(([key]) => data.runtime[key] !== 'Unavailable').map(([, name]) => name).join(', ') || 'No agent CLI'}`;
     $('workspace-path').textContent = data.workspace;
     $('profile-json').textContent = JSON.stringify(data.profile, null, 2);
     state.defaultModel = data.defaultModel; applyModelCatalog(data);

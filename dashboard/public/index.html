@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Run and manage local Kilo sessions with the OpenSensor nono sandbox.">
-  <title>OpenSensor · Kilo workspace</title>
+  <meta name="description" content="Run and manage local AI agent sessions with the OpenSensor nono sandbox.">
+  <title>OpenSensor · Agent workspace</title>
   <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/vendor/xterm.css"><link rel="stylesheet" href="/style.css">
   <script src="/vendor/xterm.js" defer></script><script src="/vendor/fit.js" defer></script><script src="/vendor/search.js" defer></script><script src="/vendor/webgl.js" defer></script><script src="/vendor/web-links.js" defer></script>
   <script src="/terminal.js" defer></script>
@@ -12,7 +12,7 @@
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="OpenSensor workspace"><img src="/favicon.svg" alt=""><span>OpenSensor<small>KILO WORKSPACE</small></span></a>
+    <a class="brand" href="/" aria-label="OpenSensor workspace"><img src="/favicon.svg" alt=""><span>OpenSensor<small>AGENT WORKSPACE</small></span></a>
     <div class="sidebar-label">YOUR MACHINE <span class="online-dot"></span></div>
     <button class="nav-item active" id="workspace-nav"><span>▦</span> Workspace <span class="nav-arrow">↗</span></button>
     <button class="nav-item" id="profile-nav"><span>◇</span> Project settings</button>
@@ -25,17 +25,19 @@
   <main>
     <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Loading…</strong></span><button id="approval-alert" class="button approval-alert" hidden></button><button class="text-button focus-exit" id="exit-focus">Exit focus view</button><span class="local-pill"><span class="online-dot"></span> SELF HOSTED</span></header>
     <div class="content" id="workspace-content">
-      <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Kilo, within bounds.</h1><p>Choose a project. Give Kilo a task. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
-      <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and Kilo</span></div></div>
+      <div class="page-heading"><div><div class="eyebrow">AGENT WORKSPACE</div><h1>Agents, within bounds.</h1><p>Choose a project and an agent. Follow every run.</p></div><button class="button secondary" id="terminal-command">↗ &nbsp; Copy terminal command</button></div>
+      <div class="stats"><div><span class="stat-label">RUNNING NOW</span><strong id="running-count">0</strong><span class="stat-caption">active sandbox sessions</span></div><div><span class="stat-label">FINISHED</span><strong id="completed-count">0</strong><span class="stat-caption">completed runs in history</span></div><div class="runtime-stat"><span class="stat-label">RUNTIME</span><strong id="runtime-name">Checking…</strong><span class="stat-caption" id="runtime-detail">Looking for nono and agents</span></div></div>
       <div class="launch-grid" id="session-launcher">
         <section class="card compose-card" aria-labelledby="compose-title">
           <div class="card-heading"><h2 id="compose-title">Start a session</h2><span class="subtle" id="selected-project-name">Select a project</span></div>
           <form id="task-form">
             <div class="run-mode-row"><label for="run-mode">SESSION MODE</label><select id="run-mode"><option value="interactive">Interactive terminal · live input & steering</option><option value="batch">Batch task · finishes after one task</option></select></div>
-            <label class="sr-only" for="prompt">Task for Kilo</label><textarea id="prompt" maxlength="12000" placeholder="Give Kilo an initial task, or leave empty to open its interactive terminal."></textarea>
-            <div class="model-row"><div><label for="model">MODEL</label><input id="model-search" type="search" placeholder="Find a model…" aria-label="Find a model"><select id="model"><option value="kilo/kilo-auto/free">Kilo · free router</option></select></div><div class="model-note"><span id="model-catalog-note">Loading Kilo models…</span><br><button type="button" class="text-button" id="refresh-models">↻ Refresh model catalog</button></div></div>
+            <div class="run-mode-row"><label for="harness">AGENT</label><select id="harness"><option value="kilo">Kilo</option><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select></div>
+            <label class="sr-only" for="prompt">Task for the agent</label><textarea id="prompt" maxlength="12000" placeholder="Give the agent an initial task, or leave empty to open its interactive terminal."></textarea>
+            <div class="model-row" id="kilo-model-row"><div><label for="model">KILO MODEL</label><input id="model-search" type="search" placeholder="Find a model…" aria-label="Find a model"><select id="model"><option value="kilo/kilo-auto/free">Kilo · free router</option></select></div><div class="model-note"><span id="model-catalog-note">Loading Kilo models…</span><br><button type="button" class="text-button" id="refresh-models">↻ Refresh model catalog</button></div></div>
+            <label class="custom-model" id="native-model-wrap" hidden>MODEL OVERRIDE · OPTIONAL<input id="native-model" placeholder="Leave blank for the agent’s default model"></label>
             <label class="custom-model" id="custom-model-wrap" hidden>Model ID<input id="custom-model" placeholder="provider/model"></label>
-            <label class="checkbox-row"><input type="checkbox" id="auto-approve"><span>Auto-approve Kilo tool prompts<small>Sandbox limits still apply. Off by default.</small></span></label>
+            <label class="checkbox-row"><input type="checkbox" id="auto-approve"><span>Auto-approve agent tool prompts<small>The nono sandbox limits still apply. Off by default.</small></span></label>
             <div class="form-footer"><button type="button" class="text-button" id="demo-prompt">Try the demo prompt ↗</button><button type="submit" class="button primary" id="start-task">Start session <span>→</span></button></div>
           </form>
         </section>
@@ -53,7 +55,7 @@
         <div class="session-grid card">
           <div id="sessions" class="session-list" aria-label="Session history"></div>
           <div class="session-view">
-            <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Choose a model and give Kilo a task to begin.</p><button type="button" class="button primary" data-open-launcher aria-controls="session-launcher">Start a session →</button></div>
+            <div id="session-empty" class="empty-state"><div class="empty-symbol">⌘</div><h3>Your next task starts here</h3><p>Choose an agent and give it a task to begin.</p><button type="button" class="button primary" data-open-launcher aria-controls="session-launcher">Start a session →</button></div>
             <div id="session-content" hidden>
               <div class="session-heading"><div><div class="session-title" id="session-title"></div><div class="session-subtitle" id="session-subtitle"></div></div><button class="button danger" id="stop-session" hidden>■ &nbsp; Stop</button></div>
               <div id="session-outcome" class="session-outcome" role="status" hidden></div>
@@ -63,8 +65,8 @@
                 <div class="terminal-toolbar"><div class="terminal-connection"><span class="online-dot" id="terminal-dot"></span><strong id="terminal-status">Connecting…</strong><span id="terminal-latency"></span></div><div class="terminal-actions"><button id="terminal-focus" aria-pressed="false" title="Fill the app while keeping browser tabs and session tabs">↗ Focus view</button><button id="terminal-select" title="Open terminal text for selection and copying">Select text</button><button id="terminal-copy" title="Copy selected text, or the visible screen. Shift+drag selects text in the terminal.">Copy</button><button id="terminal-paste" title="Paste clipboard into the terminal">Paste</button><button id="terminal-smaller" aria-label="Smaller terminal font">A−</button><button id="terminal-larger" aria-label="Larger terminal font">A+</button><button id="terminal-bottom" title="Scroll to the live screen">↓ Live</button><button id="terminal-fullscreen" title="Expand terminal to full screen">⛶ Full screen</button></div></div>
                 <div class="terminal-search-row"><label for="terminal-search">Find</label><input type="search" id="terminal-search" placeholder="Search terminal scrollback"><button id="terminal-previous" aria-label="Previous terminal match">↑</button><button id="terminal-next" aria-label="Next terminal match">↓</button><span id="terminal-matches"></span><button id="terminal-reconnect">↻ Reconnect</button></div>
                 <div class="terminal-surface" id="terminal-surface" aria-label="Live session terminal"></div>
-                <div class="terminal-controlbar"><span id="terminal-control-status">Read only</span><span id="terminal-size"></span><span id="terminal-renderer">Canvas</span><button id="terminal-control">Take control</button><button id="terminal-release" hidden>Release</button><button id="terminal-escape" title="Send Escape to Kilo">Esc</button><button id="terminal-stop" hidden>■ Stop sandbox</button><button id="terminal-interrupt" title="Send Ctrl+C to the foreground process">Ctrl+C</button></div>
-                <form id="steering-form" class="steering-form"><label class="sr-only" for="steering-input">Steer the running Kilo session</label><textarea id="steering-input" rows="2" maxlength="12000" placeholder="Steer Kilo: add context, change direction, or send the next instruction. Ctrl+Enter to send."></textarea><div><button class="button primary" id="steering-send" type="submit">Send input ↵</button><span>Click to type · Shift+drag to select · Ctrl+Shift+C to copy.</span></div></form>
+                <div class="terminal-controlbar"><span id="terminal-control-status">Read only</span><span id="terminal-size"></span><span id="terminal-renderer">Canvas</span><button id="terminal-control">Take control</button><button id="terminal-release" hidden>Release</button><button id="terminal-escape" title="Send Escape to agent">Esc</button><button id="terminal-stop" hidden>■ Stop sandbox</button><button id="terminal-interrupt" title="Send Ctrl+C to the foreground process">Ctrl+C</button></div>
+                <form id="steering-form" class="steering-form"><label class="sr-only" for="steering-input">Steer the running agent session</label><textarea id="steering-input" rows="2" maxlength="12000" placeholder="Steer the agent: add context, change direction, or send the next instruction. Ctrl+Enter to send."></textarea><div><button class="button primary" id="steering-send" type="submit">Send input ↵</button><span>Click to type · Shift+drag to select · Ctrl+Shift+C to copy.</span></div></form>
                 <div id="terminal-notice" class="terminal-notice" role="status">Reconnecting restores the screen. Closing this page leaves the session running.</div>
               </div>
               <div class="output-wrap" id="transcript-panel" hidden><pre id="output" tabindex="0" aria-label="Session transcript"></pre><div class="waiting" id="waiting" hidden><span class="online-dot"></span> Session is running</div></div>
@@ -84,7 +86,7 @@
           </div>
         </div>
       </section>
-      <footer class="main-footer"><span>OpenSensor community harness <span class="separator">·</span> Saved project policies</span><span id="footer-runtime">nono + Kilo</span></footer>
+      <footer class="main-footer"><span>OpenSensor community harness <span class="separator">·</span> Saved project policies</span><span id="footer-runtime">nono + agents</span></footer>
     </div>
     <div class="content" id="settings-content" hidden>
       <div class="page-heading"><div><div class="eyebrow">PROJECT POLICY</div><h1>A sandbox for this project.</h1><p id="settings-project">Choose a project to configure its permissions.</p></div><span class="revision-badge" id="settings-revision">Default policy</span></div>
@@ -103,8 +105,10 @@
         <form id="settings-form" class="card settings-card" novalidate>
           <section data-settings-panel="general">
             <div class="card-heading"><h2>Project defaults</h2><span class="subtle">Start here</span></div>
-            <p class="settings-intro">Choose how Kilo starts and where it keeps its configuration and login.</p>
-            <label for="s-model">Default model</label><input id="s-model" placeholder="provider/model" list="configured-models"><datalist id="configured-models"></datalist><p class="field-help">Choose a configured or Kilo gateway model, or enter a model ID. You can override it when starting a session.</p>
+            <p class="settings-intro">Choose the default agent and its model. You can select another agent for each session.</p>
+            <label for="s-harness">Default agent</label><select id="s-harness"><option value="kilo">Kilo</option><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select>
+            <div id="kilo-settings"><label for="s-model">Default Kilo model</label><input id="s-model" placeholder="provider/model" list="configured-models"><datalist id="configured-models"></datalist><p class="field-help">Choose a configured or Kilo gateway model, or enter a model ID. You can override it when starting a session.</p></div>
+            <div id="native-settings" hidden><label for="s-claude-model">Claude model override · optional</label><input id="s-claude-model" placeholder="Leave blank for Claude’s default"><label for="s-codex-model">Codex model override · optional</label><input id="s-codex-model" placeholder="Leave blank for Codex’s default"><p class="field-help">Model names are passed to the corresponding installed CLI. Each agent uses its existing login and configuration.</p></div>
             <label class="checkbox-row"><input id="s-provider-enabled" type="checkbox"><span>Configure an OpenAI-compatible provider for this project<small>Use a local model server, private endpoint, or a credential proxy.</small></span></label>
             <div id="provider-fields" class="binding-card" hidden>
               <div class="field-grid"><div><label for="s-provider-id">Provider ID</label><input id="s-provider-id" placeholder="project"></div><div><label for="s-provider-model">API model ID</label><input id="s-provider-model" placeholder="your-model-id"></div></div>
@@ -113,7 +117,7 @@
               <div class="field-grid"><div><label for="s-provider-context">Context window (tokens)</label><input id="s-provider-context" type="number" min="1024"></div><div><label for="s-provider-output">Output limit (tokens)</label><input id="s-provider-output" type="number" min="1"></div></div><p class="field-help">Set these to your model’s supported limits. The provider applies only to this project’s runs; no global Kilo file is edited.</p>
             </div>
             <label class="checkbox-row"><input id="s-auto" type="checkbox"><span>Auto-approve tool prompts by default<small>The saved file and network restrictions still apply.</small></span></label>
-            <label for="s-storage">Kilo configuration & login</label><select id="s-storage"><option value="shared">Use this machine’s existing Kilo configuration</option><option value="isolated">Use separate Kilo storage for this project</option></select>
+            <label for="s-storage">Agent configuration & login</label><select id="s-storage"><option value="shared">Use this machine’s existing agent configuration</option><option value="isolated">Use separate Kilo storage for this project</option></select>
             <div class="notice" id="storage-note"></div>
             <label for="s-preset">Start from a preset</label><div class="inline-fields"><select id="s-preset"><option value="standard">Standard development</option><option value="review">Read-only review · network allowed</option><option value="offline">Offline development · network blocked</option></select><button type="button" class="button secondary" id="apply-preset">Apply preset</button></div><p class="field-help">Presets reset the draft, including secret bindings. Review and save to apply.</p>
           </section>

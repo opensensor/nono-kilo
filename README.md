@@ -16,12 +16,12 @@ It does not install Kilo or fork its model/tool execution loop.
 
 ## Browser dashboard
 
-The [Kilo workspace dashboard](dashboard/README.md) is maintained in this
+The [agent workspace dashboard](dashboard/README.md) is maintained in this
 repository under `dashboard/`. It provides project sandbox settings, keyring
 secrets, live terminals with steering, granular Git permissions, network
-visualization, and on-demand network approvals.
+visualization, and on-demand network approvals for Kilo, Claude Code and native Codex.
 
-On a Linux host with Node.js 22+ (24 recommended), nono and Kilo installed:
+On a Linux host with Node.js 22+ (24 recommended), nono and at least one supported agent CLI installed:
 
 ```sh
 git clone https://github.com/opensensor/nono-kilo.git

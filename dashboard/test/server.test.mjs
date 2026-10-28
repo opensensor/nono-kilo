@@ -41,7 +41,7 @@ test('LAN HTTP origin guards, authentication, process lifecycle and captured out
   const binary = path.join(temp, 'fake-nono');
   await fs.mkdir(project, { recursive: true });
   await fs.writeFile(binary, `#!/usr/bin/env node\nif(process.argv[2]==='ps'){console.log('[]');process.exit(0)}\nif(['--version','profile'].includes(process.argv[2])){console.log('test runtime');process.exit(0)}\nconsole.log(JSON.stringify(process.argv.slice(2)));\nprocess.on('SIGTERM',()=>process.exit(0));\nsetInterval(()=>{},1000);\n`, { mode: 0o755 });
-  const server = createDashboard({ workspace, stateDir: path.join(temp, 'state'), configDir: path.join(temp, 'config'), home: temp, nono: binary, kilo: binary });
+  const server = createDashboard({ workspace, stateDir: path.join(temp, 'state'), configDir: path.join(temp, 'config'), home: temp, nono: binary, kilo: binary, claude: binary, codex: binary });
   await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
   t.after(async () => { await server.shutdown(); await fs.rm(temp, { recursive: true, force: true }); });
   const lan = Object.values(os.networkInterfaces()).flat().find(n => !n.internal && n.family === 'IPv4')?.address || '127.0.0.1';
@@ -103,5 +103,13 @@ test('LAN HTTP origin guards, authentication, process lifecycle and captured out
     await new Promise(resolve => setTimeout(resolve, 25));
   }
   assert.equal(detail.status, 'stopped');
+  for (const harness of ['claude', 'codex']) {
+    const started = await request('/api/sessions', { method: 'POST', headers, body: JSON.stringify({ project, prompt: 'inspect safely', harness, model: '', interactive: true }) });
+    assert.equal(started.status, 201);
+    const native = await started.json();
+    assert.equal(native.harness, harness);
+    assert.equal(native.policy.extends, `nolabs-ai/${harness}`);
+    assert.equal((await request(`/api/sessions/${native.id}/stop`, { method: 'POST', headers, body: '{}' })).status, 200);
+  }
   assert.equal((await request('/api/sessions/unknown/stop', { method: 'POST', headers, body: '{}' })).status, 404);
 });

@@ -10,6 +10,9 @@ ExecStart=/absolute/path/to/node /absolute/path/to/nono-kilo/dashboard/server.mj
 Environment="PATH=/absolute/path/to/runtime/bin:/usr/local/bin:/usr/bin:/bin"
 Environment=OPENSENSOR_NONO=/absolute/path/to/nono
 Environment=OPENSENSOR_KILO=/absolute/path/to/kilo
+# Set these if the agents are not on the service PATH:
+# Environment=OPENSENSOR_CLAUDE=/absolute/path/to/claude
+# Environment=OPENSENSOR_CODEX=/absolute/path/to/codex
 Environment=OPENSENSOR_PORT=4317
 # For a trusted LAN, also set OPENSENSOR_HOST=0.0.0.0.
 UMask=0077

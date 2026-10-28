@@ -10,12 +10,13 @@ import { fileURLToPath } from 'node:url';
 import { RequestError, atomicJSON, inside, readJSON } from './lib/core.mjs';
 import { createAuth } from './lib/auth.mjs';
 import { createSecretStore } from './lib/secrets.mjs';
-import { createPolicyStore, validateModel, isWsl2, wsl2ProxyUnsupported } from './lib/policy.mjs';
+import { createPolicyStore, isWsl2, wsl2ProxyUnsupported } from './lib/policy.mjs';
 import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
 import { validateProject, projectMetadata } from './lib/projects.mjs';
 import { TerminalHub, terminalSize } from './lib/terminal.mjs';
 import pty from 'node-pty';
 import { createModelCatalog } from './lib/models.mjs';
+import { HARNESSES, buildAgentCommand, configuredModel, validateHarness } from './lib/harnesses.mjs';
 import { NetworkMonitor } from './lib/network.mjs';
 import { NetworkApprovals, SessionDeadline } from './lib/network-approvals.mjs';
 import { dashboardOrigin } from './lib/http-access.mjs';
@@ -34,14 +35,9 @@ const VENDOR_FILES = {
 
 export { RequestError, validateProject };
 
-export function buildRunArgs({ name, prompt = '', model, autoApprove = false, profileName = PROFILE, settings, interactive = false }, kilo) {
-  if (typeof prompt !== 'string' || (!interactive && !prompt.trim()) || prompt.length > 12000) throw new RequestError('Enter a task of up to 12,000 characters. Batch tasks need a prompt.');
-  validateModel(model);
-  if (typeof autoApprove !== 'boolean') throw new RequestError('Auto approval must be on or off.');
-  if (typeof interactive !== 'boolean') throw new RequestError('Interactive mode must be on or off.');
-  if (interactive) return [...sandboxArgs(name, profileName, settings), '--', kilo, '--pure', '--model', model, ...(autoApprove ? ['--auto'] : []), ...(prompt.trim() ? [`--prompt=${prompt.trim()}`] : [])];
-  return [...sandboxArgs(name, profileName, settings), '--', kilo,
-    'run', '--pure', '--model', model, '--title', prompt.trim().slice(0, 80), ...(autoApprove ? ['--auto'] : []), '--', prompt.trim()];
+export function buildRunArgs({ name, prompt = '', model, autoApprove = false, profileName = PROFILE, settings, interactive = false, harness = settings?.harness || 'kilo' }, binaries) {
+  const available = typeof binaries === 'string' ? { kilo: binaries } : binaries;
+  return [...sandboxArgs(name, profileName, settings), '--', ...buildAgentCommand({ harness, prompt, model, autoApprove, interactive }, available)];
 }
 
 function sandboxArgs(name, profileName, settings) {
@@ -58,11 +54,12 @@ export function createDashboard(options = {}) {
   const configDir = options.configDir || process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   const nono = options.nono || process.env.OPENSENSOR_NONO || path.join(os.homedir(), '.local/bin/nono');
   const kilo = options.kilo || process.env.OPENSENSOR_KILO || 'kilo';
+  const binaries = { kilo, claude: options.claude || process.env.OPENSENSOR_CLAUDE || 'claude', codex: options.codex || process.env.OPENSENSOR_CODEX || 'codex' };
   const execute = options.execute || exec;
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const auth = createAuth(stateDir);
   const secrets = createSecretStore(stateDir, options.keyringCall);
-  const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, kilo, secretStore: secrets, home: options.home });
+  const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, ...binaries, secretStore: secrets, home: options.home });
   const sandboxPath = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter).filter(dir => !policies.protectedRoots.some(root => inside(root, path.resolve(dir)))).join(path.delimiter);
   const auditFile = path.join(stateDir, 'audit.json');
   const audit = (event, metadata = {}) => atomicJSON(auditFile, [...readJSON(auditFile, []), { at: new Date().toISOString(), event, ...metadata }].slice(-500));
@@ -147,11 +144,12 @@ export function createDashboard(options = {}) {
     const owned = new Set([...records.values()].map(r => r.name));
     const external = [];
     for (const session of native) {
-      if (owned.has(session.name) || !session.command?.includes('run') || !session.command.some(arg => path.basename(arg) === 'kilo')) continue;
+      const harness = Object.keys(HARNESSES).find(name => session.command?.some(arg => typeof arg === 'string' && path.basename(arg) === name));
+      if (owned.has(session.name) || !harness || !session.command?.includes('run')) continue;
       try { await validateProject(session.workdir, workspace); } catch { continue; }
       const prompt = session.command.at(-1);
       external.push({ id: `external-${session.session_id}`, nonoId: session.session_id, name: session.name,
-        project: session.workdir, projectName: path.basename(session.workdir), prompt,
+        project: session.workdir, projectName: path.basename(session.workdir), prompt, harness,
         model: session.command.includes('--model') ? session.command[session.command.indexOf('--model') + 1] : 'Configured model',
         status: session.status === 'running' ? 'running' : session.exit_code === 0 ? 'completed' : 'stopped',
         startedAt: session.started, exitCode: session.exit_code, kind: 'task', external: true });
@@ -182,17 +180,20 @@ export function createDashboard(options = {}) {
     if ([...records.values()].filter(r => activeStatus(r.status)).length >= 3) throw new RequestError('Three dashboard sessions are already running. Stop one before starting another.', 409);
     const id = randomUUID();
     try {
-    const name = `kilo-${id.slice(0, 8)}`;
+    const harness = validateHarness(body.harness || policies.get(project).settings.harness || 'kilo');
+    const name = `${harness}-${id.slice(0, 8)}`;
     const check = body.kind === 'check';
     if (body.interactive !== undefined && typeof body.interactive !== 'boolean') throw new RequestError('Interactive mode must be on or off.');
     const interactive = !check && body.interactive === true;
+    const savedSettings = policies.get(project).settings;
+    const model = body.model === undefined ? configuredModel(savedSettings, harness) : body.model;
+    const autoApprove = body.autoApprove ?? savedSettings.autoApprove;
+    if (!check) buildAgentCommand({ harness, prompt: body.prompt, model, autoApprove, interactive }, binaries);
     const size = terminalSize(body.cols ?? 110, body.rows ?? 30);
-    const boundValues = await secrets.resolve(policies.get(project).settings.secrets.map(s => s.secretId));
-    const policy = await policies.launch(project, boundValues, { networkApproval: settings => approvals.open(id, {
+    const boundValues = await secrets.resolve(savedSettings.secrets.map(s => s.secretId));
+    const policy = await policies.launch(project, boundValues, { harness, networkApproval: settings => approvals.open(id, {
       ...settings.network, allowDomains: [...new Set([...settings.network.allowDomains, ...settings.secrets.filter(s => s.mode === 'proxy').map(s => new URL(s.upstream).hostname)])]
     }) });
-    const model = body.model || policy.settings.defaultModel;
-    const autoApprove = body.autoApprove ?? policy.settings.autoApprove;
     const redactions = redactionValues([...boundValues.values(), ...policy.settings.environment.inherit.filter(name => /KEY|SECRET|TOKEN|PASS|AUTH|CREDENTIAL/.test(name)).map(name => process.env[name]).filter(Boolean)]);
     const metadata = secrets.list();
     let args;
@@ -203,10 +204,10 @@ export function createDashboard(options = {}) {
       const code = `import os, pathlib, sys, socket\np=pathlib.Path(sys.argv[1])\nf=pathlib.Path('.nono-check-${id}.tmp')\nassert pathlib.Path('.').is_dir()\ntry:\n f.write_text('ok')\n assert f.read_text() == 'ok'\n f.unlink()\n assert not ${readOnly ? 'True' : 'False'}, 'Read-only write unexpectedly succeeded'\n print('PASS  Project reads and writes work',flush=True)\nexcept PermissionError:\n assert ${readOnly ? 'True' : 'False'}, 'Project write unexpectedly denied'\n print('PASS  Read-only project rejects writes',flush=True)\nassert 'OPENSENSOR_DEMO_SECRET' not in os.environ\nprint('PASS  Unrelated environment variables are filtered',flush=True)\nfor target,mode in [(p,'r'),(p.with_suffix('.escape'),'w')]:\n try:\n  with target.open(mode) as handle: handle.read() if mode=='r' else handle.write('escape')\n except PermissionError:\n  print('PASS  Dashboard controls: '+('read' if mode=='r' else 'write')+' denied',flush=True)\n else: raise RuntimeError('Sandbox boundary failed')\n${policy.profile.network.block && !policy.settings.network.connectPorts.length ? "try:\n socket.create_connection(('192.0.2.1',443),timeout=0.5)\nexcept PermissionError:\n print('PASS  Direct outbound connection denied',flush=True)\nelse: raise RuntimeError('Network boundary failed')\n" : ''}print('All configured boundary checks passed.',flush=True)`;
       args = [...sandboxArgs(name, policy.profileName, policy.settings), '--', '/usr/bin/python3', '-c', code, fixture];
     } else {
-      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove, profileName: policy.profileName, settings: policy.settings, interactive }, kilo);
+      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove, profileName: policy.profileName, settings: policy.settings, interactive, harness }, binaries);
     }
-    const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · boundary test' : model,
-      prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt?.trim() || 'Interactive Kilo session', redactions), kind: check ? 'check' : 'task',
+    const record = { id, name, project, projectName: path.basename(project), harness, model: check ? 'No model · boundary test' : model || 'CLI default',
+      prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt?.trim() || `Interactive ${HARNESSES[harness].name} session`, redactions), kind: check ? 'check' : 'task',
       interactive, cols: size.cols, rows: size.rows, networkTrace: true, networkApprovals: policy.settings.network.mode === 'approval', pendingApprovals: 0,
       autoApprove: !check && autoApprove, status: 'starting', startedAt: new Date().toISOString(), logBytes: 0,
       policyRevision: policy.revision, profileName: policy.profileName, policy: policy.profile, settings: policy.settings,
@@ -216,7 +217,7 @@ export function createDashboard(options = {}) {
     persist();
     audit('session.started', { project, session: id, revision: policy.revision });
     // A supervisor-owned trace gives the network view live proxy decisions.
-    // Keep it separate from the PTY, so logs never corrupt Kilo's TUI.
+    // Keep it separate from the PTY, so logs never corrupt the agent TUI.
     await fs.writeFile(network.logPath(id), '', { mode: 0o600 });
     args.unshift('--log-file', network.logPath(id));
     const env = { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, NONO_NO_SAVE_PROMPT: '1', RUST_LOG: 'off,nono_proxy::audit=info', OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true',
@@ -311,14 +312,14 @@ export function createDashboard(options = {}) {
   }
 
   async function bootstrap() {
-    const runtime = await Promise.allSettled([runCommand(nono, ['--version']), runCommand(kilo, ['--version'])]);
+    const runtime = await Promise.allSettled([runCommand(nono, ['--version']), ...Object.values(binaries).map(binary => runCommand(binary, ['--version']))]);
+    const installed = Object.fromEntries(Object.keys(binaries).map((name, index) => [name, runtime[index + 1].status === 'fulfilled' ? runtime[index + 1].value.stdout.trim() : 'Unavailable']));
     const profile = readJSON(path.join(configDir, 'nono/profiles', `${PROFILE}.json`), null);
     return { workspace, projects: await projects(), sessions: await allSessions(), profile,
       profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: policies.defaultSettings(), ...await modelCatalog(), keyring: await secrets.status(),
       terminal: { available: true, scrollback: 5000, archiveBytes: MAX_LOG },
-      runtime: { nono: runtime[0].status === 'fulfilled' ? runtime[0].value.stdout.trim() : 'Unavailable',
-        kilo: runtime[1].status === 'fulfilled' ? runtime[1].value.stdout.trim() : 'Unavailable',
-        platform: process.platform, wsl2: isWsl2(), proxyUnsupported: wsl2ProxyUnsupported(), ready: runtime.every(r => r.status === 'fulfilled') } };
+      runtime: { nono: runtime[0].status === 'fulfilled' ? runtime[0].value.stdout.trim() : 'Unavailable', ...installed,
+        platform: process.platform, wsl2: isWsl2(), proxyUnsupported: wsl2ProxyUnsupported(), ready: runtime[0].status === 'fulfilled' && Object.values(installed).some(value => value !== 'Unavailable') } };
   }
 
   const server = http.createServer(async (req, res) => {
@@ -352,7 +353,7 @@ export function createDashboard(options = {}) {
         const project = await projectPath(body.project);
         if (policies.get(project).settings.network.mode === 'approval') throw new RequestError('Start this project with Start session in the dashboard so you can answer its network approvals.');
         const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
-        return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, `OPENSENSOR_WORKSPACE=${workspace}`, `OPENSENSOR_DASHBOARD_STATE=${stateDir}`, `XDG_CONFIG_HOME=${configDir}`, `OPENSENSOR_NONO=${nono}`, `OPENSENSOR_KILO=${kilo}`, process.execPath, path.join(ROOT, 'scripts/run-project.mjs'), project].map(quote).join(' ')}`, note: 'Loads the latest saved project policy and resolves its bound keyring credentials at launch. Dashboard time limits and captured-log masking apply only to dashboard-launched sessions.' });
+        return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, `OPENSENSOR_WORKSPACE=${workspace}`, `OPENSENSOR_DASHBOARD_STATE=${stateDir}`, `XDG_CONFIG_HOME=${configDir}`, `OPENSENSOR_NONO=${nono}`, `OPENSENSOR_KILO=${kilo}`, `OPENSENSOR_CLAUDE=${binaries.claude}`, `OPENSENSOR_CODEX=${binaries.codex}`, process.execPath, path.join(ROOT, 'scripts/run-project.mjs'), project].map(quote).join(' ')}`, note: 'Loads the latest saved project policy and resolves its bound keyring credentials at launch. Dashboard time limits and captured-log masking apply only to dashboard-launched sessions.' });
       }
       if (req.method === 'GET' && url.pathname === '/api/secrets') return json(200, { status: await secrets.status(), secrets: secrets.list().map(s => ({ ...s, projects: policies.bindings(s.id) })) });
       if (req.method === 'GET' && url.pathname === '/api/git-context') return json(200, await policies.gitContext(await projectPath(url.searchParams.get('project'))));
