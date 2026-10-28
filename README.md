@@ -2,8 +2,11 @@
 
 An OpenSensor-maintained [nono](https://nono.sh) pack for running the
 [Kilo CLI](https://kilo.ai/docs/code-with-ai/platforms/cli) in an OS sandbox.
-The source, checks, and release workflow live in
-[opensensor/nono-kilo](https://github.com/opensensor/nono-kilo).
+The source is maintained in
+[opensensor/nono-kilo](https://github.com/opensensor/nono-kilo). Signed registry
+releases are published from the public
+[matteius/nono-kilo](https://github.com/matteius/nono-kilo) fork as `matteius/kilo`.
+This is an independent community integration, not an official Kilo product.
 
 This pack adapts the upstream
 [nolabs-ai/kilo](https://github.com/nolabs-ai/nono-packs/tree/main/kilo) integration.
@@ -17,7 +20,7 @@ Install nono 0.80.0 or newer and the Kilo CLI first. The tested versions are
 recorded in `versions.json`; the initial pair is nono 0.80.0 / Kilo 7.8.18.
 
 ```sh
-nono pull opensensor/kilo
+nono pull matteius/kilo
 cd /path/to/your/project
 ~/.local/bin/nono-kilo
 
@@ -31,10 +34,10 @@ data are reused. Kilo still controls its own tool-approval prompts.
 
 If `~/.local/bin` is on your PATH, use `nono-kilo` directly. Arguments pass through
 to Kilo. The launcher creates the required directories and runs
-`nono run --profile opensensor/kilo --allow-cwd -- kilo ...`.
+`nono run --profile matteius/kilo --allow-cwd -- kilo ...`.
 
-The fully qualified profile name `opensensor/kilo` avoids ambiguity with the
-upstream pack. Its profile lives in the OpenSensor package directory, and its
+The fully qualified profile name `matteius/kilo` avoids ambiguity with the
+upstream pack. Its profile lives in the `matteius/kilo` package directory, and its
 skill is `opensensor-nono`; neither replaces the upstream pack's files.
 
 ## Access and compatibility
@@ -62,7 +65,7 @@ skill. To use nono flags directly, prepare the directories first:
 
 ```sh
 ~/.local/bin/nono-kilo --prepare-only
-nono run --profile opensensor/kilo -- kilo
+nono run --profile matteius/kilo -- kilo
 ```
 
 The standalone Kilo installation at `~/.kilo/bin` and standard Node, Bun, Rust,
@@ -107,22 +110,25 @@ separately reviewed read grant; the profile does not broadly expose `/opt`.
 
 ## Publishing
 
-Create a public `opensensor/kilo` **pack** in
+Create a public `matteius/kilo` **pack** in
 [the nono registry](https://registry.nono.sh/publish), with source repository
-`opensensor/nono-kilo` and no repository subpath. Registry sign-in and 2FA are
+`matteius/nono-kilo` and no repository subpath. Registry sign-in and 2FA are
 required to configure trusted publishing.
 
 Register this exact trusted publisher:
 
 | Field | Value |
 | --- | --- |
-| Repository | `opensensor/nono-kilo` |
+| Repository | `matteius/nono-kilo` |
 | Workflow | `.github/workflows/publish.yml` |
 | Ref pattern | `refs/tags/v*` |
 | GitHub environment | empty |
 
-After CI passes, update `package.json` and `policy.json` together, commit, and
-push the matching version tag, for example `v0.1.0`. The workflow checks that
+Keep the publishing fork's `main` branch synchronized with OpenSensor. After CI
+passes, update `package.json` and `policy.json` together, commit, and push the
+matching version tag to `matteius/nono-kilo`, for example `v0.1.0`. Publishing is
+restricted to that repository so an OpenSensor tag cannot sign for the personal
+namespace. The workflow checks that
 the tag matches the manifest, runs validation and runtime checks, and uses the
 SHA-pinned upstream `agent-sign` action with GitHub OIDC to sign and publish
 every declared artifact. No long-lived registry token is needed.
@@ -130,7 +136,7 @@ every declared artifact. No long-lived registry token is needed.
 Verify a release by pulling its exact version into a clean nono configuration:
 
 ```sh
-nono pull opensensor/kilo@0.1.0
+nono pull matteius/kilo@0.1.0
 ~/.local/bin/nono-kilo --version
 ```
 

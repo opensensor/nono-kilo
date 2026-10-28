@@ -1,4 +1,4 @@
-name: Publish opensensor/kilo
+name: Publish matteius/kilo
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
 
   publish:
     needs: test
-    if: github.repository == 'opensensor/nono-kilo'
+    if: github.repository == 'matteius/nono-kilo'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Keep this job in this workflow: the registry verifies its OIDC identity.
@@ -49,7 +49,7 @@ jobs:
           publish: "true"
           commit: "false"
           package-name: kilo
-          package-namespace: opensensor
+          package-namespace: matteius
           package-version: ${{ steps.package.outputs.version }}
           package-path: .
           registry-url: https://registry.nono.sh/api/v1

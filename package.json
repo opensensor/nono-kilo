@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "kilo",
   "version": "0.1.0",
-  "description": "OpenSensor-maintained Kilo CLI harness: nono sandbox profile, isolated UI state and temporary files, environment filtering, and sandbox guidance.",
+  "description": "Community Kilo CLI harness maintained by OpenSensor and published by matteius: nono sandbox profile, isolated UI state and temporary files, environment filtering, and sandbox guidance.",
   "license": "Apache-2.0",
   "platforms": ["linux", "macos"],
   "min_nono_version": "0.80.0",

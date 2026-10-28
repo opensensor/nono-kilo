@@ -34,4 +34,4 @@ if [[ "${1:-}" == "--prepare-only" ]]; then
   exit 0
 fi
 
-exec nono run --profile opensensor/kilo --allow-cwd -- kilo "$@"
+exec nono run --profile matteius/kilo --allow-cwd -- kilo "$@"
