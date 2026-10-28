@@ -1,11 +1,14 @@
 {
   "name": "opensensor-nono-kilo-dashboard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:sandbox": "node scripts/verify-sandbox.mjs",
+    "test:deadline": "node scripts/verify-sandbox.mjs --deadline",
+    "open": "node scripts/open.mjs"
   },
   "engines": {
     "node": ">=22"

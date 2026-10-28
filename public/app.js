@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
-const state = { projects: [], sessions: [], project: '', selected: null, tab: 'output', detail: null, busy: false, sessionHash: '' };
+const state = { projects: [], sessions: [], project: '', selected: null, tab: 'output', detail: null, busy: false, sessionHash: '', authenticated: false };
 let toastTimer;
+let pollTimer;
 
 function toast(message, error = false) {
   $('toast').textContent = message; $('toast').className = error ? 'error' : ''; $('toast').hidden = false;
@@ -9,7 +10,7 @@ function toast(message, error = false) {
 async function api(url, body) {
   const response = await fetch(url, body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' }, body: JSON.stringify(body) });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Request failed.');
+  if (!response.ok) { if (response.status === 401) { state.authenticated = false; if (!$('login-dialog').open) $('login-dialog').showModal(); } throw new Error(result.error || 'Request failed.'); }
   return result;
 }
 function element(tag, className, text) {
@@ -32,7 +33,8 @@ function renderProjects() {
   });
   $('projects').replaceChildren(...items);
 }
-function selectProject(project) {
+async function selectProject(project) {
+  if (state.settingsDirty || state.settingsSaving) return toast('Save or discard your project settings draft before switching projects.', true);
   state.project = project; state.sessionHash = ''; localStorage.setItem('opensensor.project', project);
   const current = state.projects.find(p => p.path === project);
   $('breadcrumb').textContent = current?.name || 'Choose a project';
@@ -41,6 +43,9 @@ function selectProject(project) {
   if (!state.sessions.some(s => s.id === state.selected && (s.project === project || $('all-projects').checked))) {
     state.selected = null; const first = state.sessions.find(s => s.project === project); if (first) selectSession(first.id); else showEmpty();
   }
+  $('start-task').disabled = true; $('test-sandbox').disabled = true;
+  try { if (project) await loadProjectSettings(project); }
+  catch (error) { toast(error.message, true); }
 }
 function showEmpty() { $('session-content').hidden = true; $('session-empty').hidden = false; }
 function renderSessions() {
@@ -83,10 +88,11 @@ async function refreshDetail() {
 function renderDetails() {
   if (!state.detail) return;
   const s = state.detail; const dl = element('dl');
-  for (const [key, value] of Object.entries({ Project: s.project, Model: s.model, Profile: 'opensensor-kilo-local', Status: s.status, Started: new Date(s.startedAt).toLocaleString(), 'nono session': s.nonoId || 'Starting…', 'Tool prompts': s.autoApprove ? 'Auto-approve enabled' : 'Kilo defaults', Task: s.prompt })) {
+  for (const [key, value] of Object.entries({ Project: s.project, Model: s.model, Profile: s.profileName || 'opensensor-kilo-local', 'Policy revision': s.policyRevision ?? 'Legacy profile', Status: s.status, Started: new Date(s.startedAt).toLocaleString(), 'nono session': s.nonoId || 'Starting…', 'Tool prompts': s.autoApprove ? 'Auto-approve enabled' : 'Kilo defaults', 'Bound secrets': s.secretVersions?.map(s => `${s.name} · v${s.version} · ${s.mode}`).join('\n') || 'None', Task: s.prompt })) {
     dl.append(element('dt', '', key), element('dd', '', value));
   }
   $('details-panel').replaceChildren(dl);
+  if (s.policy) { const details = element('details', 'session-policy'); details.append(element('summary', '', 'Policy used for this session'), element('pre', 'policy-preview', JSON.stringify(s.policy, null, 2))); $('details-panel').append(details); }
 }
 async function loadDiff() {
   if (!state.selected) return; const id = state.selected;
@@ -96,7 +102,7 @@ async function loadDiff() {
   $('diff-output').textContent = result.diff || 'No tracked-file diff.';
 }
 async function refresh() {
-  if (state.busy) return; state.busy = true;
+  if (state.busy || !state.authenticated) return; state.busy = true;
   try {
     state.sessions = await api('/api/sessions'); renderSessions(); if (state.selected) await refreshDetail();
     $('connection-label').firstChild.textContent = 'Connected locally'; $('connection-dot').style.background = '';
@@ -132,8 +138,8 @@ $('stop-session').addEventListener('click', async () => {
   catch (error) { toast(error.message, true); } finally { $('stop-session').disabled = false; }
 });
 document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
-for (const id of ['profile-nav', 'profile-link']) $(id).addEventListener('click', () => $('profile-dialog').showModal());
-$('workspace-nav').addEventListener('click', () => $('prompt').focus());
+for (const id of ['profile-nav', 'profile-link']) $(id).addEventListener('click', () => showPage('settings'));
+$('workspace-nav').addEventListener('click', () => { showPage('workspace'); $('prompt').focus(); });
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
 $('add-project').addEventListener('click', () => $('project-dialog').showModal());
 $('project-form').addEventListener('submit', async event => {
@@ -141,15 +147,15 @@ $('project-form').addEventListener('submit', async event => {
   try { state.projects = await api('/api/projects', { path: $('project-path').value }); $('project-dialog').close(); renderProjects(); toast('Project added.'); }
   catch (error) { toast(error.message, true); }
 });
-$('demo-prompt').addEventListener('click', () => {
-  const demo = state.projects.find(p => p.demo); if (demo) selectProject(demo.path);
+$('demo-prompt').addEventListener('click', async () => {
+  if (state.settingsDirty || state.settingsSaving) return toast('Save or discard the settings draft first.', true);
+  const demo = state.projects.find(p => p.demo); if (demo) await selectProject(demo.path);
   $('prompt').value = 'Read sensor.py and test_sensor.py. Run python3 -m unittest -v and briefly explain the temperature conversion and test results. Do not modify files or use subagents.';
   $('model').value = 'kilo/kilo-auto/free'; $('custom-model-wrap').hidden = true; $('prompt').focus();
 });
 $('terminal-command').addEventListener('click', async () => {
-  const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
-  try { await navigator.clipboard.writeText(`cd ${quote(state.project)}\nnono-kilo`); toast('Terminal command copied.'); }
-  catch { toast(`Run nono-kilo from ${state.project}.`); }
+  try { const result = await api('/api/project-command', { project: state.project }); await navigator.clipboard.writeText(result.command); toast('Copied terminal command using the saved project policy. Dashboard time limits apply only to dashboard runs.'); }
+  catch (error) { toast(error.message, true); }
 });
 $('download-log').addEventListener('click', () => {
   if (!state.detail) return;
@@ -158,18 +164,29 @@ $('download-log').addEventListener('click', () => {
 });
 async function boot() {
   try {
+    const access = new URLSearchParams(location.hash.slice(1)).get('access');
+    if (access) { history.replaceState(null, '', location.pathname); await api('/api/auth', { token: access }); }
     const data = await api('/api/bootstrap'); state.projects = data.projects; state.sessions = data.sessions;
+    state.authenticated = true; state.defaults = data.defaultSettings; $('login-dialog').close();
     $('runtime-name').textContent = data.runtime.ready ? 'nono ready' : 'Runtime unavailable';
     $('runtime-detail').textContent = `${data.runtime.nono} · Kilo ${data.runtime.kilo}`;
     $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · Kilo ${data.runtime.kilo}`;
     $('workspace-path').textContent = data.workspace;
     $('profile-json').textContent = JSON.stringify(data.profile, null, 2);
+    $('model').replaceChildren(new Option('Kilo · free router', data.defaultModel));
     if (data.configuredModel && data.configuredModel !== data.defaultModel) $('model').append(new Option(`Configured · ${data.configuredModel}`, data.configuredModel));
     $('model').append(new Option('Custom model…', 'custom'));
     const saved = localStorage.getItem('opensensor.project');
-    selectProject(state.projects.some(p => p.path === saved) ? saved : state.projects[0]?.path || '');
+    await selectProject(state.projects.some(p => p.path === saved) ? saved : state.projects[0]?.path || '');
     if (!state.selected && state.sessions.length) { const session = state.sessions.find(s => s.project === state.project); if (session) await selectSession(session.id); }
-    await refresh(); setInterval(refresh, 1500);
+    await refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 1500);
   } catch (error) { toast(error.message, true); $('runtime-name').textContent = 'Not connected'; }
 }
+$('login-dialog').addEventListener('cancel', event => event.preventDefault());
+$('lock-dashboard').addEventListener('click', async () => { try { await api('/api/logout', {}); state.authenticated = false; $('login-dialog').showModal(); } catch (error) { toast(error.message, true); } });
+$('login-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('login-error').hidden = true;
+  const token = $('access-key').value.trim(); $('access-key').value = '';
+  try { await api('/api/auth', { token }); await boot(); } catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; }
+});
 boot();

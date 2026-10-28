@@ -7,6 +7,11 @@ import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify, stripVTControlCharacters } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { RequestError, atomicJSON, inside, readJSON } from './lib/core.mjs';
+import { createAuth } from './lib/auth.mjs';
+import { createSecretStore } from './lib/secrets.mjs';
+import { createPolicyStore, validateModel, defaults } from './lib/policy.mjs';
+import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -15,9 +20,7 @@ const FREE_MODEL = 'kilo/kilo-auto/free';
 const MAX_LOG = 1024 * 1024;
 const activeStatus = status => ['starting', 'running', 'stopping'].includes(status);
 
-export class RequestError extends Error {
-  constructor(message, status = 400) { super(message); this.status = status; }
-}
+export { RequestError };
 
 export async function validateProject(input, workspace) {
   if (typeof input !== 'string' || !input.trim() || input.includes('\0')) throw new RequestError('Choose a project directory.');
@@ -33,16 +36,20 @@ export async function validateProject(input, workspace) {
   return resolved;
 }
 
-export function buildRunArgs({ name, prompt, model, autoApprove = false }, kilo) {
+export function buildRunArgs({ name, prompt, model, autoApprove = false, profileName = PROFILE, settings }, kilo) {
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw new RequestError('Enter a task of 1–12,000 characters.');
-  if (typeof model !== 'string' || !/^[a-zA-Z0-9_~][a-zA-Z0-9_~./:@+-]{1,255}$/.test(model)) throw new RequestError('Use a model ID in provider/model format.');
+  validateModel(model);
   if (typeof autoApprove !== 'boolean') throw new RequestError('Auto approval must be on or off.');
-  return ['run', '--name', name, '--profile', PROFILE, '--allow-cwd', '--no-rollback-prompt', '--', kilo,
+  return [...sandboxArgs(name, profileName, settings), '--', kilo,
     'run', '--pure', '--model', model, '--title', prompt.trim().slice(0, 80), ...(autoApprove ? ['--auto'] : []), '--', prompt.trim()];
 }
 
-function readJSON(file, fallback) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return fallback; }
+function sandboxArgs(name, profileName, settings) {
+  return ['run', '--name', name, '--profile', profileName, '--allow-cwd',
+    ...(settings?.rollback.enabled === false ? ['--no-rollback'] : ['--rollback', '--no-rollback-prompt']),
+    ...(settings?.limits.memoryMB ? ['--memory', `${settings.limits.memoryMB}M`] : []),
+    ...(settings?.limits.maxProcesses ? ['--max-processes', String(settings.limits.maxProcesses)] : []),
+    ...(settings?.allowGpu ? ['--allow-gpu'] : [])];
 }
 
 function configuredModel(configDir) {
@@ -65,6 +72,19 @@ export function createDashboard(options = {}) {
   const kilo = options.kilo || process.env.OPENSENSOR_KILO || 'kilo';
   const execute = options.execute || exec;
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const auth = createAuth(stateDir);
+  const secrets = createSecretStore(stateDir, options.keyringCall);
+  const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, secretStore: secrets, home: options.home });
+  const sandboxPath = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter).filter(dir => !policies.protectedRoots.some(root => inside(root, path.resolve(dir)))).join(path.delimiter);
+  const auditFile = path.join(stateDir, 'audit.json');
+  const audit = (event, metadata = {}) => atomicJSON(auditFile, [...readJSON(auditFile, []), { at: new Date().toISOString(), event, ...metadata }].slice(-500));
+  let mutationQueue = Promise.resolve();
+  const mutate = operation => { const result = mutationQueue.then(operation); mutationQueue = result.catch(() => {}); return result; };
+  async function projectPath(input) {
+    const project = await validateProject(input, workspace);
+    if (policies.protectedRoots.some(root => inside(root, project) || inside(project, root))) throw new RequestError('The dashboard controller cannot be used as a sandbox project.');
+    return project;
+  }
   const indexFile = path.join(stateDir, 'sessions.json');
   const projectsFile = path.join(stateDir, 'projects.json');
   const records = new Map(readJSON(indexFile, []).map(record => [record.id, record]));
@@ -75,7 +95,7 @@ export function createDashboard(options = {}) {
   for (const record of records.values()) {
     if (activeStatus(record.status)) { record.status = 'interrupted'; record.endedAt = new Date().toISOString(); }
   }
-  const persist = () => writeFileSync(indexFile, JSON.stringify([...records.values()], null, 2), { mode: 0o600 });
+  const persist = () => atomicJSON(indexFile, [...records.values()]);
   const logPath = id => path.join(stateDir, `${id}.log`);
   const runCommand = (command, args, extra = {}) => execute(command, args, { timeout: 12000, maxBuffer: 1024 * 1024, ...extra });
 
@@ -89,7 +109,7 @@ export function createDashboard(options = {}) {
     const entries = [...new Set([...discovered, ...readJSON(projectsFile, [])])];
     const valid = await Promise.all(entries.map(async candidate => {
       try {
-        const real = await validateProject(candidate, workspace);
+        const real = await projectPath(candidate);
         return { path: real, name: path.basename(real), relative: path.relative(workspace, real), demo: path.basename(real) === 'nono-kilo-demo' };
       } catch { return null; }
     }));
@@ -102,7 +122,7 @@ export function createDashboard(options = {}) {
     refreshPromise = (async () => {
       try {
         const { stdout } = await runCommand(nono, ['ps', '--all', '--json']);
-        cache = { at: Date.now(), sessions: JSON.parse(stdout).filter(s => s.profile === PROFILE) };
+        cache = { at: Date.now(), sessions: JSON.parse(stdout).filter(s => s.profile === PROFILE || s.profile?.startsWith('opensensor-')) };
         for (const record of records.values()) {
           const session = cache.sessions.find(s => s.name === record.name);
           if (session) record.nonoId = session.session_id;
@@ -148,44 +168,54 @@ export function createDashboard(options = {}) {
 
   async function start(body) {
     if (closing) throw new RequestError('Dashboard is restarting.', 503);
-    const project = await validateProject(body.project, workspace);
+    const project = await projectPath(body.project);
     if ([...records.values()].filter(r => activeStatus(r.status)).length >= 3) throw new RequestError('Three dashboard sessions are already running. Stop one before starting another.', 409);
     const id = randomUUID();
     const name = `kilo-${id.slice(0, 8)}`;
     const check = body.kind === 'check';
-    const model = body.model || FREE_MODEL;
+    const boundValues = await secrets.resolve(policies.get(project).settings.secrets.map(s => s.secretId));
+    const policy = await policies.launch(project, boundValues);
+    const model = body.model || policy.settings.defaultModel;
+    const autoApprove = body.autoApprove ?? policy.settings.autoApprove;
+    const redactions = redactionValues([...boundValues.values(), ...policy.settings.environment.inherit.filter(name => /KEY|SECRET|TOKEN|PASS|AUTH|CREDENTIAL/.test(name)).map(name => process.env[name]).filter(Boolean)]);
+    const metadata = secrets.list();
     let args;
     if (check) {
       const fixture = path.join(stateDir, `${id}.fixture`);
       writeFileSync(fixture, 'Harmless sandbox boundary fixture.\n', { mode: 0o600 });
-      const code = `import os, pathlib, sys\np=pathlib.Path(sys.argv[1])\nf=pathlib.Path('.nono-check-${id}.tmp')\nf.write_text('ok')\nassert f.read_text() == 'ok'\nf.unlink()\nprint('PASS  Project reads and writes work',flush=True)\nassert 'OPENSENSOR_DEMO_SECRET' not in os.environ\nprint('PASS  Unrelated environment variables are filtered',flush=True)\nfor target,mode in [(p,'r'),(p.with_suffix('.escape'),'w')]:\n try:\n  with target.open(mode) as handle: handle.read() if mode=='r' else handle.write('escape')\n except PermissionError:\n  print('PASS  Outside-project '+('read' if mode=='r' else 'write')+' denied',flush=True)\n else: raise RuntimeError('Sandbox boundary failed')\nprint('All four sandbox checks passed.',flush=True)`;
-      args = ['run', '--name', name, '--profile', PROFILE, '--allow-cwd', '--no-rollback-prompt', '--block-net', '--', 'python3', '-c', code, fixture];
+      const readOnly = policy.settings.projectAccess === 'read';
+      const code = `import os, pathlib, sys, socket\np=pathlib.Path(sys.argv[1])\nf=pathlib.Path('.nono-check-${id}.tmp')\nassert pathlib.Path('.').is_dir()\ntry:\n f.write_text('ok')\n assert f.read_text() == 'ok'\n f.unlink()\n assert not ${readOnly ? 'True' : 'False'}, 'Read-only write unexpectedly succeeded'\n print('PASS  Project reads and writes work',flush=True)\nexcept PermissionError:\n assert ${readOnly ? 'True' : 'False'}, 'Project write unexpectedly denied'\n print('PASS  Read-only project rejects writes',flush=True)\nassert 'OPENSENSOR_DEMO_SECRET' not in os.environ\nprint('PASS  Unrelated environment variables are filtered',flush=True)\nfor target,mode in [(p,'r'),(p.with_suffix('.escape'),'w')]:\n try:\n  with target.open(mode) as handle: handle.read() if mode=='r' else handle.write('escape')\n except PermissionError:\n  print('PASS  Dashboard controls: '+('read' if mode=='r' else 'write')+' denied',flush=True)\n else: raise RuntimeError('Sandbox boundary failed')\n${policy.profile.network.block && !policy.settings.network.connectPorts.length ? "try:\n socket.create_connection(('192.0.2.1',443),timeout=0.5)\nexcept PermissionError:\n print('PASS  Direct outbound connection denied',flush=True)\nelse: raise RuntimeError('Network boundary failed')\n" : ''}print('All configured boundary checks passed.',flush=True)`;
+      args = [...sandboxArgs(name, policy.profileName, policy.settings), '--', '/usr/bin/python3', '-c', code, fixture];
     } else {
-      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove: body.autoApprove ?? false }, kilo);
+      args = buildRunArgs({ name, prompt: body.prompt, model, autoApprove, profileName: policy.profileName, settings: policy.settings }, kilo);
     }
-    const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · offline' : model,
-      prompt: check ? 'Verify filesystem and environment boundaries' : body.prompt.trim(), kind: check ? 'check' : 'task',
-      autoApprove: !check && Boolean(body.autoApprove), status: 'starting', startedAt: new Date().toISOString(), logBytes: 0 };
-    // Prepare the same directories as the local launcher before nono resolves grants.
-    for (const dir of [path.join(configDir, 'kilo'), path.join(configDir, 'nono/profile-drafts'),
-      path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'kilo'),
-      path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local/state'), 'opensensor-kilo'),
-      path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'kilo/tmp')]) {
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-    }
+    const record = { id, name, project, projectName: path.basename(project), model: check ? 'No model · boundary test' : model,
+      prompt: check ? 'Verify saved sandbox policy' : redact(body.prompt.trim(), redactions), kind: check ? 'check' : 'task',
+      autoApprove: !check && autoApprove, status: 'starting', startedAt: new Date().toISOString(), logBytes: 0,
+      policyRevision: policy.revision, profileName: policy.profileName, policy: policy.profile, settings: policy.settings,
+      secretVersions: policy.settings.secrets.map(b => { const s = metadata.find(s => s.id === b.secretId); return { name: s.name, version: s.version, env: b.env, mode: b.mode }; }) };
     records.set(id, record);
     persist();
+    audit('session.started', { project, session: id, revision: policy.revision });
     const child = spawn(nono, args, { cwd: project, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true' } });
+      env: { ...process.env, ...policy.supervisorEnv, PATH: sandboxPath, OPENSENSOR_DEMO_SECRET: 'harmless-test-value', KILO_DISABLE_AUTOUPDATE: 'true' } });
     children.set(id, child);
     child.on('spawn', () => { record.status = 'running'; persist(); cache.at = 0; });
-    child.stdout.on('data', data => append(record, data));
-    child.stderr.on('data', data => append(record, data));
+    const stdout = new RedactingStream(redactions, data => append(record, data));
+    const stderr = new RedactingStream(redactions, data => append(record, data));
+    child.stdout.on('data', data => stdout.push(data));
+    child.stderr.on('data', data => stderr.push(data));
     child.on('error', error => { append(record, `Could not launch nono: ${error.message}\n`); });
+    const deadline = setTimeout(() => {
+      record.timedOut = true; append(record, '\n[Dashboard time limit reached. Stopping session.]\n');
+      stop(id).catch(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch {} });
+    }, policy.settings.limits.timeoutMinutes * 60000);
     child.on('close', (code, signal) => {
-      record.status = record.status === 'stopping' ? 'stopped' : code === 0 ? 'completed' : 'failed';
+      clearTimeout(deadline); stdout.end(); stderr.end();
+      record.status = record.timedOut ? 'timed-out' : record.status === 'stopping' ? 'stopped' : code === 0 ? 'completed' : 'failed';
       record.exitCode = code; record.signal = signal; record.endedAt = new Date().toISOString();
       children.delete(id); persist(); cache.at = 0;
+      audit('session.ended', { session: id, status: record.status, exitCode: code });
       if (check) fs.unlink(path.join(stateDir, `${id}.fixture`)).catch(() => {});
     });
     return record;
@@ -195,6 +225,7 @@ export function createDashboard(options = {}) {
     const record = await findSession(id);
     if (!activeStatus(record.status)) throw new RequestError('This session has already ended.', 409);
     if (!record.external) { record.status = 'stopping'; persist(); }
+    audit('session.stop-requested', { session: id });
     if (record.nonoId) {
       await runCommand(nono, ['stop', record.nonoId, '--timeout', '3'], { timeout: 8000 });
     } else {
@@ -202,6 +233,8 @@ export function createDashboard(options = {}) {
       if (!child?.pid) throw new RequestError('The session is not ready to stop. Try again.', 409);
       try { process.kill(-child.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
     }
+    const child = children.get(id);
+    if (child) { const timer = setTimeout(() => { if (children.get(id) === child) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } }, 5000); timer.unref(); }
     cache.at = 0;
     return { stopped: true };
   }
@@ -218,9 +251,11 @@ export function createDashboard(options = {}) {
     const record = await findSession(id);
     const project = await validateProject(record.project, workspace);
     try {
+      // Repository configuration is agent-writable. Never execute its fsmonitor, hooks, diff helpers or pager on the host.
+      const git = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat'];
       const [changes, status] = await Promise.all([
-        runCommand('git', ['--no-pager', 'diff', '--no-ext-diff', '--no-textconv', '--', '.'], { cwd: project, maxBuffer: 2 * 1024 * 1024 }),
-        runCommand('git', ['status', '--short', '--untracked-files=normal'], { cwd: project })
+        runCommand('git', [...git, 'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--', '.'], { cwd: project, maxBuffer: 2 * 1024 * 1024 }),
+        runCommand('git', [...git, 'status', '--short', '--untracked-files=normal', '--ignore-submodules=all'], { cwd: project })
       ]);
       return { diff: changes.stdout.slice(0, 160000), status: status.stdout, note: 'Current working tree, including any changes made before this session.' };
     } catch { return { diff: '', status: '', note: 'Working tree changes are available for Git projects.' }; }
@@ -230,10 +265,10 @@ export function createDashboard(options = {}) {
     const runtime = await Promise.allSettled([runCommand(nono, ['--version']), runCommand(kilo, ['--version'])]);
     const profile = readJSON(path.join(configDir, 'nono/profiles', `${PROFILE}.json`), null);
     return { workspace, projects: await projects(), sessions: await allSessions(), profile,
-      profileName: PROFILE, defaultModel: FREE_MODEL, configuredModel: configuredModel(configDir),
+      profileName: PROFILE, defaultModel: FREE_MODEL, defaultSettings: defaults(), configuredModel: configuredModel(configDir), keyring: await secrets.status(),
       runtime: { nono: runtime[0].status === 'fulfilled' ? runtime[0].value.stdout.trim() : 'Unavailable',
         kilo: runtime[1].status === 'fulfilled' ? runtime[1].value.stdout.trim() : 'Unavailable',
-        platform: process.platform, ready: runtime.every(r => r.status === 'fulfilled') && Boolean(profile) } };
+        platform: process.platform, ready: runtime.every(r => r.status === 'fulfilled') } };
   }
 
   const server = http.createServer(async (req, res) => {
@@ -242,7 +277,7 @@ export function createDashboard(options = {}) {
     const origins = new Set([...hosts].map(host => `http://${host}`));
     const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
-    const json = (status, data) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+    const json = (status, data, extra = {}) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json', ...extra }); res.end(JSON.stringify(data)); };
     try {
       if (!hosts.has(req.headers.host) || (req.headers.origin && !origins.has(req.headers.origin))) throw new RequestError('Only the local dashboard origin is allowed.', 403);
       const url = new URL(req.url, `http://${req.headers.host}`);
@@ -252,15 +287,41 @@ export function createDashboard(options = {}) {
       if (req.method === 'POST') {
         if (!origins.has(req.headers.origin) || req.headers['x-opensensor-client'] !== 'dashboard' || !req.headers['content-type']?.startsWith('application/json')) throw new RequestError('Use the local dashboard to make changes.', 403);
         let raw = '';
-        for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 20000) throw new RequestError('Request is too large.', 413); }
+        for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 128000) throw new RequestError('Request is too large.', 413); }
         try { body = JSON.parse(raw); } catch { throw new RequestError('Invalid JSON.'); }
         if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Expected a JSON object.');
       }
+      if (req.method === 'POST' && url.pathname === '/api/auth') return json(200, { authenticated: true }, { 'Set-Cookie': auth.login(body.token) });
+      if (url.pathname.startsWith('/api/') && !auth.check(req)) throw new RequestError('Open your private dashboard link to sign in.', 401);
+      if (req.method === 'POST' && url.pathname === '/api/logout') return json(200, { authenticated: false }, { 'Set-Cookie': auth.logout() });
+      if (req.method === 'GET' && url.pathname === '/api/project-settings') return json(200, await policies.describe(await projectPath(url.searchParams.get('project'))));
+      if (req.method === 'POST' && url.pathname === '/api/project-settings') return json(200, await mutate(async () => {
+        const project = await projectPath(body.project); const saved = await policies.save(project, body.settings, body.revision);
+        audit('settings.saved', { project, revision: saved.revision }); return saved;
+      }));
+      if (req.method === 'POST' && url.pathname === '/api/project-settings/validate') return json(200, await policies.preview(await projectPath(body.project), body.settings));
+      if (req.method === 'POST' && url.pathname === '/api/project-command') {
+        const project = await projectPath(body.project); const policy = await policies.launch(project);
+        const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
+        return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, nono, ...sandboxArgs(`kilo-terminal-${randomUUID().slice(0, 8)}`, policy.profileName, policy.settings), '--', kilo, '--model', policy.settings.defaultModel].map(quote).join(' ')}`, note: 'Terminal sessions use this policy snapshot. The dashboard time limit and captured-log masking apply only to dashboard-launched sessions.' });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/secrets') return json(200, { status: await secrets.status(), secrets: secrets.list().map(s => ({ ...s, projects: policies.bindings(s.id) })) });
+      if (req.method === 'POST' && url.pathname === '/api/secrets') return json(201, await mutate(async () => { const s = await secrets.save(body); audit(body.id ? 'secret.rotated' : 'secret.created', { id: s.id, name: s.name, version: s.version }); return s; }));
+      const secretMatch = url.pathname.match(/^\/api\/secrets\/([a-f0-9]{32})\/(enabled|delete)$/);
+      if (req.method === 'POST' && secretMatch) return json(200, await mutate(async () => {
+        const id = secretMatch[1];
+        if (secretMatch[2] === 'delete') {
+          if (policies.bindings(id).length) throw new RequestError('Remove this secret from project settings before deleting it.', 409);
+          await secrets.remove(id); audit('secret.deleted', { id }); return { deleted: true };
+        }
+        const s = await secrets.setEnabled(id, body.enabled); audit('secret.enabled-changed', { id, enabled: s.enabled }); return s;
+      }));
+      if (req.method === 'GET' && url.pathname === '/api/audit') return json(200, readJSON(auditFile, []).slice(-100).reverse());
       if (req.method === 'GET' && url.pathname === '/api/bootstrap') return json(200, await bootstrap());
       if (req.method === 'GET' && url.pathname === '/api/sessions') return json(200, await allSessions());
-      if (req.method === 'POST' && url.pathname === '/api/sessions') return json(201, await start(body));
+      if (req.method === 'POST' && url.pathname === '/api/sessions') return json(201, await mutate(() => start(body)));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
-        const project = await validateProject(body.path, workspace);
+        const project = await projectPath(body.path);
         writeFileSync(projectsFile, JSON.stringify([...new Set([...readJSON(projectsFile, []), project])]), { mode: 0o600 });
         return json(200, await projects());
       }
@@ -270,7 +331,7 @@ export function createDashboard(options = {}) {
         if (req.method === 'GET' && match[2] === 'diff') return json(200, await diff(match[1]));
         if (req.method === 'GET' && !match[2]) return json(200, await details(match[1]));
       }
-      if (req.method === 'GET' && ['/', '/app.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
+      if (req.method === 'GET' && ['/', '/app.js', '/settings.js', '/style.css', '/favicon.svg'].includes(url.pathname)) {
         const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const types = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' };
         res.writeHead(200, { ...headers, 'Content-Type': types[name.split('.').at(-1)] });

@@ -1,51 +1,100 @@
 # OpenSensor Kilo workspace
 
-A local browser dashboard for projects, Kilo tasks, nono sandbox sessions, captured output, and working-tree diffs. It uses the installed `opensensor-kilo-local` profile and runs at **http://127.0.0.1:4317**.
+A local browser dashboard for per-project nono policies, Kilo sessions, credentials, logs and working-tree changes. It listens at **http://127.0.0.1:4317** and uses the installed nono CLI to enforce the sandbox.
 
-## Use
+## Open it
 
-1. Select an individual project in the sidebar. Git repositories directly under `~/opensensor` are discovered automatically; **Add project** accepts nested directories within that workspace.
-2. Choose a model and enter a task. The initial selection is Kilo's free router. This is a per-run choice and does not modify your Kilo configuration.
-3. Click **Start session**. Watch **Output**, inspect the current **Working tree**, or use **Stop**.
-4. **Test sandbox boundaries** checks project reads/writes, environment filtering, and denied reads/writes outside the project without calling a model.
-
-The demo project is `~/opensensor/nono-kilo-demo`. **Try the demo prompt** selects it and prepares a read-only task that runs its four tests. **Copy terminal command** lets you use the interactive Kilo TUI from the same project instead.
-
-Kilo tool approval defaults remain in effect unless you explicitly select **Auto-approve Kilo tool prompts** for that session. Noninteractive Kilo can reject tasks that require an unanswered permission prompt. The nono profile's filesystem and environment restrictions remain in effect either way.
-
-## Start and stop the dashboard
+The user service starts at login. To open a new authenticated browser:
 
 ```sh
 systemctl --user start nono-kilo-dashboard
-systemctl --user status nono-kilo-dashboard
-systemctl --user stop nono-kilo-dashboard
+nono-kilo-dashboard-open
 ```
 
-For development (stop the service first to free the port):
+The second command prints a **private access link**. Open it locally and keep it private. The browser exchanges the fragment for an HttpOnly, SameSite=Strict cookie valid for 24 hours, then removes the fragment. Use **Lock this browser** to sign out. `npm run open` from this repository also prints the link.
+
+## Configure a project
+
+Select a project in the sidebar, then open **Project settings**. Git repositories directly under `~/opensensor` are discovered automatically. **Add project** accepts nested directories. The workspace root and dashboard controller are excluded.
+
+| Section | Controls |
+| --- | --- |
+| General | Default model, optional OpenAI-compatible provider, tool approval, shared or separate Kilo storage, presets |
+| Files & runtimes | Read-only or writable project, extra read/write paths, denied paths, developer runtimes |
+| Network | Unrestricted, blocked or restricted networking; allowed/denied domains; direct TCP and listen ports |
+| Environment | Inherited variable names and non-secret `NAME=value` settings |
+| Secret bindings | Environment injection or credential proxy with optional HTTP endpoint rules |
+| Limits & recovery | Deadline, memory cap, process/thread cap, GPU access, rollback snapshots and exclusions |
+| Policy & history | Validate with nono, inspect/export the generated profile, restore a prior revision as a draft |
+
+Click **Save project policy**. Changes apply to future sessions. Each managed session records its policy revision, generated profile, run settings and secret versions. Stale edits are rejected instead of overwriting a newer revision. The latest 20 prior settings revisions are retained. Exporting the generated profile does not include dashboard deadlines or CLI resource-limit arguments; those remain in the project settings.
+
+The default retains this machine's existing Kilo login/configuration and allows networking. **Shared Kilo storage includes all credentials already in that configuration**; secret bindings do not hide them. Select separate storage to avoid sharing that login, configuration and session history. Its directories are `~/.local/share/opensensor-kilo-projects/<project-id>/{config,data,cache,state}`. Existing credentials are not copied there.
+
+## Secrets and project providers
+
+1. Open **Secrets → Add secret**. Give it a name and paste its value. The value goes into GNOME Keyring through Linux Secret Service. Only metadata is stored by the dashboard; there is no reveal/read-value API.
+2. Open the target project's **Secret bindings**, add the stored secret and choose a delivery mode.
+3. For **environment delivery**, set the variable expected by your provider, such as `OPENAI_API_KEY`. The agent and its subprocesses can read that value.
+4. For a **credential proxy**, select restricted networking, name the route (for example `provider`), and set its upstream URL, credential variable, header and format. Include an upstream prefix such as `/v1` if required. Optional endpoint rules use `METHOD /path`, for example `POST /chat/completions`; paths are relative to the upstream prefix. Blank endpoint rules allow all paths on that upstream.
+5. In **General**, enable an OpenAI-compatible project provider. Enter its provider ID, API model ID and actual token limits. For a proxy, enter the matching route name: its URL and placeholder key are connected automatically. For direct connections, enter the base URL and an environment binding's variable name. A local server without authentication can leave the key variable empty.
+6. Save and start a session. The project provider becomes the default model; you can override it per run.
+
+Kilo receives a trusted, transient `KILO_CONFIG_CONTENT` override with environment references, following [Kilo's configuration mechanism](https://kilo.ai/docs/code-with-ai/platforms/cli). Global Kilo files are not modified. The custom provider uses `@ai-sdk/openai-compatible`; other provider families can use existing Kilo configuration and environment bindings.
+
+Other clients must use the proxy's generated `ROUTE_BASE_URL` (for example `PROVIDER_BASE_URL`) and send the placeholder from the configured credential variable. nono validates it and injects the real credential upstream. See [nono credential injection](https://nono.sh/docs/cli/features/credential-injection).
+
+Rotate, enable/disable or delete credentials from **Secrets**. Remove active project bindings before deleting one. Disabled or missing credentials prevent new sessions. Rotation and disabling affect new sessions: stop existing sessions to end their current access. Historical settings referring to a deleted credential must be updated before restoring them.
+
+Managed runs resolve one credential version before launch. Values stay in host memory and the nono supervisor's environment; reserved source variables are removed from the child environment. Profiles contain references only. This prevents rotation from racing nono's credential lookup and the log masker. Proxy-delivered real values never enter the agent's environment.
+
+## Network, limits and recovery
+
+- Blocked mode is for offline checks and commands. Remote AI models cannot run there.
+- Restricted domain access uses nono's HTTP(S) proxy; clients must honor its proxy settings. Without allowed domains or credential routes, outbound traffic is blocked except explicitly granted TCP ports.
+- Direct outbound ports permit **any destination IP on those ports**, bypassing domain rules. Listen ports allow binding beyond loopback.
+- Linux denied paths cover existing files at launch. Keep future secret files outside project grants. Additional paths are canonicalized again at launch. Control directories, credential stores and writable host executable directories cannot be granted.
+- Memory and process/thread caps require Linux cgroup v2 delegation. nono fails if it cannot enforce a requested cap. `0` means uncapped. The dashboard enforces deadlines with stop/termination and a forced-stop fallback.
+- Rollback controls retain nono snapshots of project work and extra writable grants. Kilo login, cache and session storage are excluded automatically. This dashboard does not yet provide a snapshot restore UI; use nono's recovery tools. Exclusions do not change access permissions.
+
+## Run and inspect
+
+In **Workspace**, enter a task and click **Start session**. Follow **Output**, inspect the **Working tree**, view **Details**, download the masked log or click **Stop**. At most three managed sessions run concurrently. Tool approval defaults remain in effect unless you opt into auto approval; kernel restrictions still apply.
+
+The demo project has a saved read-only policy with a 30-minute deadline, 2 GiB memory cap and 128-process/thread cap. **Try the demo prompt** reads its temperature conversion and runs four tests. **Test sandbox boundaries** runs Python without a model, using the saved policy, to check project access, environment filtering and protected management files. Fully blocked policies also check outbound denial.
+
+**Copy terminal command** creates a profile snapshot and command for the Kilo TUI. Terminal sessions can be listed and stopped, but dashboard deadlines and captured-log masking apply only to dashboard-launched sessions. Terminal commands resolve keyring credentials at their own launch time.
+
+The original `nono-kilo` launcher still uses its legacy profile. Use the dashboard's copied command to apply saved project settings in a terminal.
+
+## Security and persistence
+
+- Loopback only, authenticated APIs, Host/Origin checks, JSON/custom-header mutation checks and a self-only CSP. Sandbox agents cannot authenticate by forging browser headers.
+- Authentication files, controller code, service configuration, credential stores and policy files stay outside sandbox grants. Commands use argument arrays, without a shell. The editor does not expose raw host hooks, elevation or arbitrary nono flags.
+- Shared Kilo data is the compatibility default. Environment secrets remain readable by the agent. Use proxy credentials and separate Kilo storage for stronger separation from existing machine credentials.
+- Captured stdout/stderr mask bound values and common URL/base64/JSON encodings **before writing logs**, including values split across chunks. This is best-effort output hygiene, not protection against deliberate transformation or exfiltration. It does not sanitize project files, Kilo's own storage, or terminal transcripts.
+- Working-tree views disable repository fsmonitor/hooks, external diffs, text conversion and submodule inspection so agent-controlled Git helpers do not execute on the host. Views include pre-existing changes, not just this session's edits.
+- Private state files live in `~/.local/state/nono-kilo-dashboard`: settings/history, session metadata, masked logs, audit metadata and the browser access key. Credentials remain in Secret Service under `opensensor-nono-dashboard`. Logs are capped at 1 MiB per run; the UI shows the last 160,000 characters.
+- Stopping the dashboard stops its active managed sessions. History persists. This is a single-user local control surface, not a remote/multi-user service. Unsandboxed processes running as that OS user remain trusted.
+
+To invalidate every browser session, stop the service, remove only `~/.local/state/nono-kilo-dashboard/browser-access.json`, and restart. Obtain a new private link with `nono-kilo-dashboard-open`. Never commit that file or paste its contents into chat.
+
+## Development and verification
 
 ```sh
+systemctl --user stop nono-kilo-dashboard
 npm start
+# In another terminal:
 npm test
+npm run test:sandbox
+# Also exercise a real one-minute timeout against a process ignoring SIGTERM:
+npm run test:deadline
 ```
 
-No npm dependencies or build step are needed; Node.js 22+ is required. The service requires the installed nono CLI, Kilo CLI, local profile, and Python 3 for the boundary check. The existing model/provider configuration and authentication are reused. The configured MiniMax endpoint was unavailable during setup; choose another reachable model or restore that service.
+No npm dependencies or build step. Requirements: Node.js 22+, nono (tested with 0.80.0), Kilo (tested with 7.8.18), `/usr/bin/python3`, Python GI with `Secret` introspection, and an unlocked default Secret Service collection. The installed desktop has these. Unlock a locked keyring using the desktop password manager; there is no plaintext fallback.
 
-The installed user service starts automatically at login. It uses saved Kilo credentials and the service environment; API keys exported only in a terminal are not automatically copied into the service.
+The unit/API suite covers revisions, unsafe grants, credential metadata/rotation, providers, chunked log masking, authentication, origin guards, process stop and hostile Git configuration. The live verifier exercises Landlock, blocked networking, cgroup limits, real keyring injection, credential-proxy endpoint rules, real Kilo against a local mock API, masked on-disk output and forged headers from inside a sandbox. It uses generated fixture credentials, cleans up its temporary projects and makes no paid model calls.
 
-## Local boundaries and storage
+The installed service starts at login. Keys exported only in a terminal are not automatically available to it. Server overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, `OPENSENSOR_PORT`. The live verifier uses `~/opensensor` and the installed user's nono/profile locations.
 
-- Listens only on `127.0.0.1`; it is not published or exposed on the LAN.
-- Host and Origin checks reject DNS rebinding and cross-site requests. Mutations also require a custom request header and JSON content type.
-- Project paths are canonicalized and must be children of `~/opensensor`. The workspace root and symlinks pointing outside it are rejected.
-- Commands are launched as argument arrays, never through a shell. The dashboard cannot supply arbitrary nono flags or disable sandbox enforcement.
-- The selected project, Kilo config/data/cache, and isolated Kilo UI state are writable. The profile also grants standard runtime/system reads. Networking is allowed for tasks and blocked for the boundary check. Kilo's provider credentials are available to Kilo and its subprocesses.
-- Dashboard records and logs live in `~/.local/state/nono-kilo-dashboard`, outside the sandbox grants. Logs are capped at 1 MiB per session; the UI shows the most recent 160,000 characters.
-- The working-tree tab shows current Git changes, including pre-existing changes. It is not a per-session attribution system.
-- Terminal-launched Kilo sessions are listed, but their terminal transcripts are not retroactively captured.
-- Stopping the dashboard service also stops its active child sessions. Finished output persists across restarts.
-
-This is a local, single-user control surface. Other processes running as your OS user can access it. It is not designed for remote hosting or multiple users.
-
-The `nono-ts` 0.3.0 npm package was evaluated, but its declared Linux native package returned 404. The dashboard uses the working nono CLI for enforcement, session supervision, and profile handling instead. The management server itself is not placed inside the agent sandbox.
-
-Configuration overrides: `OPENSENSOR_WORKSPACE`, `OPENSENSOR_DASHBOARD_STATE`, `OPENSENSOR_NONO`, `OPENSENSOR_KILO`, and `OPENSENSOR_PORT`. These configure the local server; they are not browser-controlled.
+The `nono-ts` 0.3.0 package was evaluated during setup, but its declared Linux native package returned 404. This app uses the working CLI for enforcement and supervision.
