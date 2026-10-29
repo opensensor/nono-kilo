@@ -14,6 +14,30 @@ It adds XDG-aware paths, separate Kilo UI state and temporary storage, filtered
 environment inheritance, and independently maintained release checks.
 It does not install Kilo or fork its model/tool execution loop.
 
+## Why use this instead of the upstream pack?
+
+Use this repository when you want a local workspace for several agent CLIs,
+with project-specific controls you can change in a browser:
+
+- **A dashboard for Kilo, Claude Code and Codex CLI.** Start and steer sessions,
+  inspect their terminals, working trees and network activity, and keep each
+  project's settings together.
+- **A path from open access to tighter network rules.** Choose a preset from the
+  workspace, approve new destinations as they appear, or learn the HTTP(S) hosts
+  used by representative runs and review them before saving an allowlist.
+- **Separate controls for Git and credentials.** Set local and remote Git command
+  permissions, bind project secrets from the system keyring, and use a credential
+  proxy where the client supports it.
+- **A Kilo pack adapted for this setup.** The CLI profile handles XDG paths,
+  separate Kilo UI state and temporary storage, and filtered environment
+  inheritance, with runtime checks maintained here.
+
+**Rapid development:** This community project is changing quickly. Expect
+policy and dashboard behavior to evolve, review permissions before running an
+agent, and use the [dashboard setup guide](dashboard/README.md) for current
+requirements and platform limits. The [upstream `nolabs-ai/kilo` pack](https://github.com/nolabs-ai/nono-packs/tree/main/kilo)
+remains the maintained nono integration this work adapts.
+
 ## Browser dashboard
 
 The [agent workspace dashboard](dashboard/README.md) is maintained in this

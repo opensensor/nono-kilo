@@ -61,7 +61,7 @@ print('PASS absolute HTTP uses approval gate',flush=True)
   const auth = await fetch(origin + '/api/auth', { method: 'POST', headers, body: JSON.stringify({ token: key }) }); headers.Cookie = auth.headers.get('set-cookie').split(';')[0];
   const api = async (url, body) => { const res = await fetch(origin + url, { headers, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) }); const data = await res.json(); if (!res.ok) throw new Error(`${res.status}: ${data.error}`); return data; };
   await api('/api/projects', { path: project });
-  const settings = defaults(); settings.network.mode = 'approval'; settings.storage = 'isolated'; settings.rollback.enabled = false; settings.git.enabled = false;
+  const settings = defaults(); settings.network.mode = 'approval'; settings.storage = 'isolated'; settings.rollback.enabled = false;
   await api('/api/project-settings', { project, settings, revision: 0 });
   record = await api('/api/sessions', { project, model: 'fixture/local', prompt: 'Verify live network approvals with local test connections.', interactive: true, cols: 110, rows: 30 }); profiles.push(record.profileName);
   await fs.writeFile(path.join(project, 'targets.json'), JSON.stringify([firstPort, secondPort, dashboard.address().port, Number(record.policy.network.upstream_proxy.split(':')[1])]));

@@ -4,21 +4,26 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { createPolicyStore, defaults } from '../lib/policy.mjs';
+import { createPolicyStore, defaults, sandboxRuntimePath } from '../lib/policy.mjs';
 import { createSecretStore } from '../lib/secrets.mjs';
 import { RedactingStream, redactionValues } from '../lib/redaction.mjs';
 import { createAuth } from '../lib/auth.mjs';
 
-async function fixture(t, { wsl2 = false, kilo } = {}) {
+async function fixture(t, { wsl2 = false, proxyUnsupported = wsl2, kilo } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-policy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = path.join(root, 'workspace/project'), stateDir = path.join(root, 'state'), configDir = path.join(root, 'config');
   await fs.mkdir(project, { recursive: true }); await fs.mkdir(stateDir); await fs.mkdir(configDir);
   const values = new Map();
   const secrets = createSecretStore(stateDir, async r => { if (r.action === 'put') { values.set(r.id, r.value); return { ok: true }; } if (r.action === 'get') return { value: values.get(r.id) }; if (r.action === 'delete') { values.delete(r.id); return { ok: true }; } });
-  const store = createPolicyStore({ stateDir, configDir, workspace: path.join(root, 'workspace'), sourceDir: path.join(root, 'controller'), home: root, nono: '/fake', kilo, execute: async () => ({ stdout: '{}' }), secretStore: secrets, wsl2, proxyUnsupported: wsl2 });
+  const store = createPolicyStore({ stateDir, configDir, workspace: path.join(root, 'workspace'), sourceDir: path.join(root, 'controller'), home: root, nono: '/fake', kilo, execute: async () => ({ stdout: '{}' }), secretStore: secrets, wsl2, proxyUnsupported });
   return { root, project, stateDir, configDir, secrets, store, values };
 }
+
+test('WSL2 sandbox PATH omits Windows executables and protected controller paths', () => {
+  const value = '/usr/bin:/mnt/c/Windows/System32:/usr/bin:/protected/bin:/bin';
+  assert.equal(sandboxRuntimePath(value, ['/protected'], true), '/usr/bin:/bin');
+});
 
 test('saved policies enforce restrictions, preserve revisions and reject stale writes', async t => {
   const f = await fixture(t); const s = defaults(); s.projectAccess = 'read'; s.network.mode = 'blocked'; s.storage = 'isolated';
@@ -52,16 +57,49 @@ test('standalone Kilo executable is readable inside the generated profile', asyn
 test('WSL2 profiles disable unsupported pathname Unix-socket mediation', async t => {
   const f = await fixture(t, { wsl2: true });
   const settings = f.store.defaultSettings();
-  assert.equal(settings.git.enabled, false);
+  assert.equal(settings.git.enabled, true);
   const policy = await f.store.save(f.project, settings, 0);
   assert.equal(policy.profile.linux.af_unix_mediation, 'off');
-  assert.equal(policy.profile.command_policies, undefined);
-  settings.git.enabled = true;
-  await assert.rejects(f.store.preview(f.project, settings), /unavailable on WSL2/);
-  settings.git.enabled = false; settings.network.mode = 'approval';
+  assert.ok(policy.profile.command_policies?.commands?.git);
+  settings.network.mode = 'approval';
   await assert.rejects(f.store.preview(f.project, settings), /cannot enforce proxy-only networking/);
   settings.network.mode = 'blocked';
   assert.equal((await f.store.preview(f.project, settings)).profile.network.block, true);
+});
+
+test('modern WSL2 kernels allow restricted networking with managed Git', async t => {
+  const f = await fixture(t, { wsl2: true, proxyUnsupported: false });
+  const settings = f.store.defaultSettings(); settings.network.mode = 'restricted'; settings.network.allowDomains = ['example.com'];
+  const policy = await f.store.preview(f.project, settings);
+  assert.deepEqual(policy.profile.network.allow_domain, ['example.com']);
+  assert.ok(policy.profile.command_policies?.commands?.git);
+});
+
+test('learning uses the proxy, retains denies and rejects unobserved direct ports', async t => {
+  const f = await fixture(t, { wsl2: true, proxyUnsupported: false });
+  const settings = defaults(); settings.network.mode = 'learning'; settings.network.denyDomains = ['telemetry.example.com'];
+  const policy = await f.store.preview(f.project, settings);
+  assert.equal(policy.profile.network.block, false);
+  assert.deepEqual(policy.profile.network.allow_domain, ['*']);
+  assert.deepEqual(policy.profile.network.deny_domain, ['telemetry.example.com']);
+  assert.deepEqual(policy.profile.network.connect_port, []);
+  settings.network.connectPorts = [443];
+  await assert.rejects(f.store.preview(f.project, settings), /bypass the learning proxy/);
+});
+
+test('WSL2 remote Git rejects SSH agents and accepts a specific key file', async t => {
+  const f = await fixture(t, { wsl2: true });
+  const sshDir = path.join(f.root, '.ssh'); await fs.mkdir(sshDir);
+  const knownHosts = path.join(sshDir, 'known_hosts'); await fs.writeFile(knownHosts, 'fixture');
+  const privateKey = path.join(sshDir, 'deploy_key'); await fs.writeFile(privateKey, 'fixture');
+  await fs.mkdir(path.join(f.project, '.git'));
+  const settings = f.store.defaultSettings(); settings.git.fetch = true; settings.git.remote = 'git@example.com:team/repo.git';
+  settings.git.authentication = 'agent'; settings.git.knownHosts = knownHosts;
+  await assert.rejects(f.store.preview(f.project, settings), /cannot be isolated on WSL2/);
+  settings.git.authentication = 'key'; settings.git.privateKey = privateKey;
+  const policy = await f.store.preview(f.project, settings);
+  assert.ok(policy.profile.filesystem.deny.includes(sshDir));
+  assert.ok(policy.profile.command_policies?.commands?.ssh);
 });
 
 test('network approval profiles fail closed without a live controller gate', async t => {

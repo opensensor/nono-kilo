@@ -20,7 +20,7 @@ export function parseGitRemote(value) {
   return { host, user, port, repository, target: `${user}@${host}` };
 }
 
-export async function normalizeGit(input, { home, project, network, projectAccess }) {
+export async function normalizeGit(input, { home, project, network, projectAccess, wsl2 = false }) {
   const g = { ...gitDefaults(), ...input };
   for (const key of Object.keys(g)) if (!(key in gitDefaults())) throw new RequestError(`Unsupported Git setting: ${key}`);
   for (const key of ['enabled', 'systemConfig', 'globalConfig', 'fetch', 'push']) if (typeof g[key] !== 'boolean') throw new RequestError(`Git ${key} must be on or off.`);
@@ -43,6 +43,7 @@ export async function normalizeGit(input, { home, project, network, projectAcces
     if (network.denyDomains.some(rule => { const [host, port] = rule.split(':'); return (!port || Number(port) === remote.port) && (host === remote.host || host.startsWith('*.') && remote.host.endsWith(host.slice(1))); })) throw new RequestError('The Git remote conflicts with a denied host.');
     if (g.push && !g.branches.length) throw new RequestError('Allow at least one explicit branch before enabling push.');
     if (g.authentication === 'none') throw new RequestError('Select an SSH agent or a specific key file for remote Git access.');
+    if (wsl2 && g.authentication === 'agent') throw new RequestError('SSH agent authentication cannot be isolated on WSL2 because pathname socket mediation is unavailable. Use a dedicated key file for this repository.');
     async function sshFile(value, label) {
       let real; try { real = await fs.realpath(value); } catch { throw new RequestError(`${label} must be an existing file inside ~/.ssh.`); }
       const ssh = path.join(home, '.ssh');

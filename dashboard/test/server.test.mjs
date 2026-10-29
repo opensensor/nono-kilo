@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createDashboard, validateProject, buildRunArgs } from '../server.mjs';
+import { defaults } from '../lib/policy.mjs';
 
 test('project grants reject the workspace root, traversal, files and escaping symlinks', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-dashboard-paths-'));
@@ -112,4 +113,44 @@ test('LAN HTTP origin guards, authentication, process lifecycle and captured out
     assert.equal((await request(`/api/sessions/${native.id}/stop`, { method: 'POST', headers, body: '{}' })).status, 200);
   }
   assert.equal((await request('/api/sessions/unknown/stop', { method: 'POST', headers, body: '{}' })).status, 404);
+});
+
+test('learning review promotes only observed project hosts into a restricted policy', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'kilo-dashboard-learning-'));
+  const workspace = path.join(temp, 'workspace'), project = path.join(workspace, 'demo'), stateDir = path.join(temp, 'state');
+  await fs.mkdir(project, { recursive: true }); await fs.mkdir(stateDir);
+  const settings = defaults(); settings.network.mode = 'learning'; settings.network.denyDomains = ['blocked.example.com'];
+  await fs.writeFile(path.join(stateDir, 'project-settings.json'), JSON.stringify({ [project]: { revision: 1, updatedAt: new Date().toISOString(), settings, history: [] } }));
+  const record = { id: 'learning-fixture', project, status: 'completed', settings, networkTrace: true };
+  await fs.writeFile(path.join(stateDir, 'sessions.json'), JSON.stringify([record]));
+  await fs.writeFile(path.join(stateDir, `${record.id}.network.json`), JSON.stringify({ events: [], destinations: [
+    { host: 'api.example.com', port: 443, allowed: 3, denied: 0, responses: 2, connections: 0, lastSeen: '2026-10-01T00:00:00.000Z' },
+    { host: 'blocked.example.com', port: 443, allowed: 0, denied: 2, responses: 0, connections: 0, lastSeen: '2026-10-01T00:00:01.000Z' }
+  ], samples: [], connections: [], totals: { allowed: 3, denied: 2, responses: 2, connections: 0 }, truncated: false }));
+  const server = createDashboard({ workspace, stateDir, configDir: path.join(temp, 'config'), home: temp, nono: '/fake', kilo: '/fake',
+    execute: async () => ({ stdout: '{}', stderr: '' }) });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await server.shutdown(); await fs.rm(temp, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { Origin: base, 'Content-Type': 'application/json', 'X-OpenSensor-Client': 'dashboard' };
+  const request = (route, body) => fetch(base + route, body === undefined ? { headers } : { method: 'POST', headers, body: JSON.stringify(body) });
+  const { key } = JSON.parse(await fs.readFile(path.join(stateDir, 'browser-access.json')));
+  const auth = await request('/api/auth', { token: key }); headers.Cookie = auth.headers.get('set-cookie').split(';')[0];
+  assert.equal((await request('/api/project-command', { project })).status, 400);
+  const reviewed = await (await request(`/api/network-learning?project=${encodeURIComponent(project)}`)).json();
+  assert.deepEqual(reviewed.domains.map(d => d.host), ['api.example.com']);
+  assert.equal((await request('/api/network-learning/finish', { project, revision: 1, domains: ['unseen.example.com'] })).status, 409);
+  const finished = await (await request('/api/network-learning/finish', { project, revision: 1, domains: ['api.example.com'] })).json();
+  assert.equal(finished.revision, 2); assert.equal(finished.settings.network.mode, 'restricted');
+  assert.deepEqual(finished.profile.network.allow_domain, ['api.example.com']);
+  assert.deepEqual(finished.profile.network.deny_domain, ['blocked.example.com']);
+  assert.equal((await request('/api/network-learning/finish', { project, revision: 1, domains: [] })).status, 409);
+  const guided = await (await request('/api/project-preset', { project, revision: 2, preset: 'guided' })).json();
+  assert.equal(guided.revision, 3); assert.equal(guided.settings.network.mode, 'approval');
+  assert.deepEqual(guided.settings.network.allowDomains, ['api.example.com']);
+  assert.equal((await request('/api/project-preset', { project, revision: 2, preset: 'offline' })).status, 409);
+  assert.equal((await request('/api/project-preset', { project, revision: 3, preset: 'unsupported' })).status, 400);
+  const offline = await (await request('/api/project-preset', { project, revision: 3, preset: 'offline' })).json();
+  assert.equal(offline.revision, 4); assert.equal(offline.settings.network.mode, 'blocked');
+  assert.equal(offline.profile.network.block, true);
 });

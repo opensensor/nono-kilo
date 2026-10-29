@@ -1,6 +1,14 @@
 const $ = id => document.getElementById(id);
 const state = { projects: [], sessions: [], project: '', selected: null, tab: 'output', detail: null, busy: false, sessionHash: '', authenticated: false };
 const harnessLabels = { kilo: 'Kilo', claude: 'Claude Code', codex: 'Codex CLI' };
+const displayScales = [100, 115, 130, 150];
+function setDisplayScale(value) {
+  const size = displayScales.includes(Number(value)) ? Number(value) : 115;
+  document.documentElement.style.zoom = String(size / 100);
+  $('display-scale').value = String(size);
+  localStorage.setItem('opensensor.displayScale', String(size));
+  requestAnimationFrame(() => liveTerminal.fit());
+}
 function updateLauncherHarness() {
   const harness = $('harness').value, native = harness !== 'kilo';
   $('kilo-model-row').hidden = native; $('custom-model-wrap').hidden = native || $('model').value !== 'custom'; $('native-model-wrap').hidden = !native;
@@ -65,6 +73,7 @@ async function selectProject(project) {
     state.selected = null; const first = state.sessions.find(s => s.project === project); if (first) selectSession(first.id); else showEmpty();
   }
   $('start-task').disabled = true; $('test-sandbox').disabled = true;
+  $('workspace-preset').disabled = true; $('workspace-preset-status').textContent = 'Loading saved project policy…'; $('workspace-review-learning').hidden = true;
   try { if (project) await loadProjectSettings(project); }
   catch (error) { $('scope-summary').replaceChildren(); $('scope-note').textContent = error.message; toast(error.message, true); }
 }
@@ -236,7 +245,9 @@ async function boot() {
     for (const [name, label] of Object.entries(harnessLabels)) { const option = $('harness').querySelector(`[value=${name}]`); option.disabled = data.runtime[name] === 'Unavailable'; option.textContent = option.disabled ? `${label} · unavailable` : label; }
     $('runtime-name').textContent = data.runtime.ready ? 'nono ready' : 'Runtime unavailable';
     $('runtime-detail').textContent = `${data.runtime.nono} · ${Object.entries(harnessLabels).filter(([key]) => data.runtime[key] !== 'Unavailable').map(([, name]) => name).join(', ') || 'No agent CLI'}`;
-    $('git-wsl-note').hidden = !data.runtime.wsl2;
+    $('s-git-auth').querySelector('[value=agent]').disabled = data.runtime.wsl2;
+    $('git-wsl-agent-note').hidden = !data.runtime.wsl2;
+    if (data.runtime.wsl2) $('git-key-help').textContent = 'The exact file is readable only by the Git SSH transport. On WSL2, use an unencrypted, dedicated deploy key; SSH-agent mode is unavailable.';
     $('footer-runtime').textContent = `${data.runtime.platform === 'linux' ? 'Linux · Landlock' : data.runtime.platform} · ${Object.entries(harnessLabels).filter(([key]) => data.runtime[key] !== 'Unavailable').map(([, name]) => name).join(', ') || 'No agent CLI'}`;
     $('workspace-path').textContent = data.workspace;
     $('profile-json').textContent = JSON.stringify(data.profile, null, 2);
@@ -248,6 +259,8 @@ async function boot() {
   } catch (error) { toast(error.message, true); $('runtime-name').textContent = 'Not connected'; }
 }
 $('login-dialog').addEventListener('cancel', event => event.preventDefault());
+$('display-scale').addEventListener('change', event => setDisplayScale(event.target.value));
+setDisplayScale(localStorage.getItem('opensensor.displayScale'));
 $('lock-dashboard').addEventListener('click', async () => { try { await api('/api/logout', {}); state.authenticated = false; liveTerminal.disconnect(); $('login-dialog').showModal(); } catch (error) { toast(error.message, true); } });
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault(); $('login-error').hidden = true;

@@ -14,6 +14,10 @@ export const wsl2ProxyUnsupported = () => {
   const version = os.release().match(/^(\d+)\.(\d+)/);
   return !version || Number(version[1]) < 6 || (Number(version[1]) === 6 && Number(version[2]) < 7);
 };
+export const sandboxRuntimePath = (value, protectedRoots, wsl2 = isWsl2()) =>
+  [...new Set((value || '/usr/bin:/bin').split(path.delimiter).filter(dir => dir &&
+    !(wsl2 && /^\/mnt\/[a-z]\//i.test(dir)) &&
+    !protectedRoots.some(root => inside(root, path.resolve(dir)))))].join(path.delimiter);
 export const defaults = () => ({
   schemaVersion: 1, harness: 'kilo', defaultModel: 'kilo/kilo-auto/free', nativeModels: { claude: '', codex: '' }, autoApprove: false,
   projectAccess: 'readwrite', storage: 'shared', runtimes: ['python', 'bun', 'rust', 'nix', 'git'],
@@ -50,7 +54,7 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
   // dependencies as well as bin directories from being changed by an agent.
   const hostRuntimeRoots = ['.nvm', '.fnm', '.npm', '.bun', '.cargo', '.rustup', '.pyenv', '.local/lib', '.local/share/pnpm', '.local/share/fnm'].map(p => path.join(home, p));
   const settings = () => readJSON(file, {});
-  const defaultSettings = () => { const value = defaults(); if (wsl2) value.git.enabled = false; return value; };
+  const defaultSettings = () => defaults();
   const get = project => settings()[project] || { revision: 0, updatedAt: null, settings: defaultSettings(), history: [] };
   async function kiloExecutableDirs() {
     // Kilo's npm launcher execs a native binary outside PATH. Command mediation
@@ -99,16 +103,16 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
     }
     for (const denied of strings(v.denyPaths, 'Denied paths')) result.denyPaths.push(await safePath(denied, project, true));
     const network = { ...d.network, ...v.network };
-    result.network.mode = choose(network.mode, ['unrestricted', 'restricted', 'approval', 'blocked'], 'network mode');
-    if (proxyUnsupported && ['restricted', 'approval'].includes(result.network.mode)) throw new RequestError('This WSL2 kernel cannot enforce proxy-only networking. Choose Unrestricted or Blocked, or run on Linux with Landlock V4 or newer.');
+    result.network.mode = choose(network.mode, ['unrestricted', 'learning', 'restricted', 'approval', 'blocked'], 'network mode');
+    if (proxyUnsupported && ['learning', 'restricted', 'approval'].includes(result.network.mode)) throw new RequestError('This WSL2 kernel cannot enforce proxy-only networking. Choose Unrestricted or Blocked, or run on Linux with Landlock V4 or newer.');
     for (const key of ['allowDomains', 'denyDomains']) result.network[key] = strings(network[key], 'domains').map(domain => {
       if (!/^(\*\.)?(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(domain)) throw new RequestError('Use hostnames or *.domain without ports or URL paths. Domain rules apply to all HTTP(S) ports.');
       return domain.toLowerCase();
     });
     for (const key of ['connectPorts', 'listenPorts']) result.network[key] = [...new Set(list(network[key], 'ports').map(p => integer(p, 1, 65535, 'Port')))];
-    if (!['restricted', 'approval'].includes(network.mode) && (result.network.allowDomains.length || result.network.denyDomains.length || result.network.connectPorts.length || result.network.listenPorts.length)) throw new RequestError('Domain and port rules require restricted networking or network approvals. Clear the rules or change the mode.');
-    result.git = await normalizeGit(v.git, { home, project, network: result.network, projectAccess: result.projectAccess });
-    if (wsl2 && result.git.enabled) throw new RequestError('Managed Git command policies are unavailable on WSL2 with this nono version. Turn off Manage Git commands in Project settings.');
+    if (!['learning', 'restricted', 'approval'].includes(network.mode) && (result.network.allowDomains.length || result.network.denyDomains.length || result.network.connectPorts.length || result.network.listenPorts.length)) throw new RequestError('Domain and port rules require learning, restricted networking or network approvals. Clear the rules or change the mode.');
+    if (network.mode === 'learning' && result.network.connectPorts.length) throw new RequestError('Direct outbound TCP ports bypass the learning proxy. Remove them while learning.');
+    result.git = await normalizeGit(v.git, { home, project, network: result.network, projectAccess: result.projectAccess, wsl2 });
     const env = { ...d.environment, ...v.environment };
     result.environment.inherit = strings(env.inherit, 'Inherited variable names').map(envName);
     if (!env.variables || typeof env.variables !== 'object' || Array.isArray(env.variables) || Object.keys(env.variables).length > 60) throw new RequestError('Environment variables must be a name/value object with at most 60 entries.');
@@ -124,7 +128,7 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
       if (usedEnv.has(item.env) || item.env in result.environment.variables || result.environment.inherit.includes(item.env)) throw new RequestError('Each secret variable must be unique and cannot also be a plain or inherited variable.');
       usedEnv.add(item.env);
       if (item.mode === 'proxy') {
-        if (!['restricted', 'approval'].includes(network.mode)) throw new RequestError('Credential proxy bindings require restricted networking or network approvals.');
+        if (!['learning', 'restricted', 'approval'].includes(network.mode)) throw new RequestError('Credential proxy bindings require learning, restricted networking or network approvals.');
         if (!/^[a-z][a-z0-9_]{0,39}$/.test(binding.route || '')) throw new RequestError('Proxy route names use lowercase letters, digits and underscores.');
         if (routes.has(binding.route)) throw new RequestError('Proxy route names must be unique.'); routes.add(binding.route);
         let url; try { url = new URL(binding.upstream); } catch { throw new RequestError('Enter a valid upstream URL.'); }
@@ -173,6 +177,7 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
     validateHarness(harness);
     if (harness !== 'kilo' && s.storage === 'isolated') throw new RequestError('Claude Code and Codex CLI require shared runtime storage.');
     const restricted = ['restricted', 'approval'].includes(s.network.mode);
+    const proxied = restricted || s.network.mode === 'learning';
     const id = projectId(project);
     const isolated = path.join(home, '.local/share/opensensor-kilo-projects', id);
     const dirs = s.storage === 'isolated'
@@ -192,7 +197,7 @@ export function createPolicyStore({ stateDir, configDir, workspace, sourceDir, e
       security: { signal_mode: 'isolated', process_info_mode: 'isolated', capability_elevation: false },
       linux: { af_unix_mediation: wsl2 ? 'off' : 'pathname' },
       filesystem: { allow, read: binaryReadDir ? [binaryReadDir] : [], allow_file: [], read_file: [], deny: [...s.denyPaths, ...denied] }, workdir: { access: s.projectAccess },
-      network: { block: s.network.mode === 'blocked', ...(restricted ? { allow_domain: s.network.allowDomains, deny_domain: s.network.denyDomains, connect_port: s.network.connectPorts, listen_port: s.network.listenPorts } : {}) },
+      network: { block: s.network.mode === 'blocked', ...(proxied ? { allow_domain: s.network.mode === 'learning' ? ['*'] : s.network.allowDomains, deny_domain: s.network.denyDomains, connect_port: s.network.connectPorts, listen_port: s.network.listenPorts } : {}) },
       environment: { allow_vars: [...BASE_ENV, ...s.environment.inherit], set_vars: { XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state, TMPDIR: tempDir, ...(harness === 'kilo' ? { KILO_DISABLE_AUTOUPDATE: 'true' } : {}), ...s.environment.variables } },
       env_credentials: {}, diagnostics: { redaction: { extra_env_vars: s.secrets.map(b => b.env) } },
       open_urls: { allow_origins: [], allow_localhost: false }, allow_launch_services: false, allow_gpu: s.allowGpu,

@@ -108,6 +108,10 @@ export class NetworkMonitor {
       if (!active(stream.record)) this.streams.delete(stream.record.id);
     })); } finally { this.busy = false; }
   }
+  async flush() {
+    while (this.busy) await new Promise(resolve => setTimeout(resolve, 10));
+    await this.tick();
+  }
   async snapshot(record) {
     let data = this.streams.get(record.id)?.data;
     if (!data) {

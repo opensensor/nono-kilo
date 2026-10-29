@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { RequestError, atomicJSON, inside, readJSON } from './lib/core.mjs';
 import { createAuth } from './lib/auth.mjs';
 import { createSecretStore } from './lib/secrets.mjs';
-import { createPolicyStore, isWsl2, wsl2ProxyUnsupported } from './lib/policy.mjs';
+import { createPolicyStore, isWsl2, wsl2ProxyUnsupported, sandboxRuntimePath } from './lib/policy.mjs';
 import { RedactingStream, redactionValues, redact } from './lib/redaction.mjs';
 import { validateProject, projectMetadata } from './lib/projects.mjs';
 import { TerminalHub, terminalSize } from './lib/terminal.mjs';
@@ -20,6 +20,7 @@ import { HARNESSES, buildAgentCommand, configuredModel, validateHarness } from '
 import { NetworkMonitor } from './lib/network.mjs';
 import { NetworkApprovals, SessionDeadline } from './lib/network-approvals.mjs';
 import { dashboardOrigin } from './lib/http-access.mjs';
+import { applyPreset } from './lib/presets.mjs';
 
 const exec = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +61,9 @@ export function createDashboard(options = {}) {
   const auth = createAuth(stateDir);
   const secrets = createSecretStore(stateDir, options.keyringCall);
   const policies = createPolicyStore({ stateDir, configDir, workspace, sourceDir: ROOT, execute, nono, ...binaries, secretStore: secrets, home: options.home });
-  const sandboxPath = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter).filter(dir => !policies.protectedRoots.some(root => inside(root, path.resolve(dir)))).join(path.delimiter);
+  // WSL appends Windows PATH entries to Linux shells. Command mediation scans
+  // every trusted executable there, which can delay startup for minutes on DrvFs.
+  const sandboxPath = sandboxRuntimePath(process.env.PATH, policies.protectedRoots);
   const auditFile = path.join(stateDir, 'audit.json');
   const audit = (event, metadata = {}) => atomicJSON(auditFile, [...readJSON(auditFile, []), { at: new Date().toISOString(), event, ...metadata }].slice(-500));
   let mutationQueue = Promise.resolve();
@@ -87,6 +90,29 @@ export function createDashboard(options = {}) {
   const runCommand = (command, args, extra = {}) => execute(command, args, { timeout: 12000, maxBuffer: 1024 * 1024, ...extra });
   const modelCatalog = createModelCatalog({ configDir, stateDir, kilo, execute, cwd: ROOT });
   const network = new NetworkMonitor(stateDir, options.home);
+  async function learnedNetwork(project) {
+    await network.flush();
+    const sessions = [...records.values()].filter(record => record.project === project && !record.external && record.settings?.network?.mode === 'learning');
+    const domains = new Map(); let truncated = false;
+    for (const record of sessions) {
+      const snapshot = await network.snapshot(record);
+      truncated ||= snapshot.truncated;
+      for (const destination of snapshot.destinations) {
+        if (!destination.allowed && !destination.responses) continue;
+        // Domain policy accepts DNS names and IPv4 addresses. Socket samples and
+        // IPv6 literals cannot be promoted into a domain allowlist.
+        if (!/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(destination.host)) continue;
+        const host = destination.host.toLowerCase();
+        const entry = domains.get(host) || { host, ports: [], allowed: 0, responses: 0, lastSeen: '' };
+        if (!entry.ports.includes(destination.port)) entry.ports.push(destination.port);
+        entry.allowed += destination.allowed; entry.responses += destination.responses;
+        if (destination.lastSeen > entry.lastSeen) entry.lastSeen = destination.lastSeen;
+        domains.set(host, entry);
+      }
+    }
+    return { project, sessions: sessions.length, activeSessions: sessions.filter(record => activeStatus(record.status)).length,
+      truncated, domains: [...domains.values()].sort((a, b) => b.lastSeen.localeCompare(a.lastSeen) || a.host.localeCompare(b.host)) };
+  }
   const approvals = new NetworkApprovals({ stateDir, audit, protectedPorts: () => [server.address()?.port],
     onChange: (id, count) => {
       const record = records.get(id); if (!record) return;
@@ -348,10 +374,35 @@ export function createDashboard(options = {}) {
         const project = await projectPath(body.project); const saved = await policies.save(project, body.settings, body.revision);
         audit('settings.saved', { project, revision: saved.revision }); return saved;
       }));
+      if (req.method === 'POST' && url.pathname === '/api/project-preset') return json(200, await mutate(async () => {
+        const project = await projectPath(body.project), current = policies.get(project);
+        if (body.revision !== current.revision) throw new RequestError('Settings changed in another window. Reload them before changing the preset.', 409);
+        const saved = await policies.save(project, applyPreset(current.settings, body.preset), current.revision);
+        audit('settings.preset-changed', { project, revision: saved.revision, preset: body.preset });
+        return saved;
+      }));
       if (req.method === 'POST' && url.pathname === '/api/project-settings/validate') return json(200, await policies.preview(await projectPath(body.project), body.settings));
+      if (req.method === 'GET' && url.pathname === '/api/network-learning') return json(200, await learnedNetwork(await projectPath(url.searchParams.get('project'))));
+      if (req.method === 'POST' && url.pathname === '/api/network-learning/finish') return json(200, await mutate(async () => {
+        const project = await projectPath(body.project), current = policies.get(project);
+        if (current.settings.network.mode !== 'learning') throw new RequestError('Save learning mode for this project before finishing.', 409);
+        if (body.revision !== current.revision) throw new RequestError('Settings changed in another window. Reload them before finishing.', 409);
+        const learned = await learnedNetwork(project);
+        if (learned.activeSessions) throw new RequestError('Stop the active learning sessions for this project before restricting new sessions.', 409);
+        if (!Array.isArray(body.domains) || body.domains.length > 60 || body.domains.some(host => typeof host !== 'string')) throw new RequestError('Select up to 60 learned domains.');
+        const observed = new Set(learned.domains.map(d => d.host));
+        if (body.domains.some(host => !observed.has(host))) throw new RequestError('A selected domain was not observed in this project’s learning sessions. Refresh the list.', 409);
+        const allowDomains = [...new Set([...current.settings.network.allowDomains, ...body.domains])];
+        if (allowDomains.length > 60) throw new RequestError('The combined allowlist exceeds 60 domains. Select fewer destinations.');
+        const settings = structuredClone(current.settings);
+        settings.network = { ...settings.network, mode: 'restricted', allowDomains };
+        const saved = await policies.save(project, settings, current.revision);
+        audit('network.learning-finished', { project, revision: saved.revision, learnedDomains: body.domains.length });
+        return saved;
+      }));
       if (req.method === 'POST' && url.pathname === '/api/project-command') {
         const project = await projectPath(body.project);
-        if (policies.get(project).settings.network.mode === 'approval') throw new RequestError('Start this project with Start session in the dashboard so you can answer its network approvals.');
+        if (['approval', 'learning'].includes(policies.get(project).settings.network.mode)) throw new RequestError('Start this project with Start session in the dashboard so its network decisions can be recorded or answered.');
         const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
         return json(200, { command: `cd ${quote(project)}\n${['env', `PATH=${sandboxPath}`, `OPENSENSOR_WORKSPACE=${workspace}`, `OPENSENSOR_DASHBOARD_STATE=${stateDir}`, `XDG_CONFIG_HOME=${configDir}`, `OPENSENSOR_NONO=${nono}`, `OPENSENSOR_KILO=${kilo}`, `OPENSENSOR_CLAUDE=${binaries.claude}`, `OPENSENSOR_CODEX=${binaries.codex}`, process.execPath, path.join(ROOT, 'scripts/run-project.mjs'), project].map(quote).join(' ')}`, note: 'Loads the latest saved project policy and resolves its bound keyring credentials at launch. Dashboard time limits and captured-log masking apply only to dashboard-launched sessions.' });
       }

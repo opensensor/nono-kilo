@@ -15,6 +15,7 @@ function settingsError(message = '') { $('settings-error').textContent = message
 function settingsTab(tab) {
   document.querySelectorAll('[data-settings-panel]').forEach(panel => { panel.hidden = panel.dataset.settingsPanel !== tab; });
   document.querySelectorAll('[data-settings-tab]').forEach(button => { button.classList.toggle('active', button.dataset.settingsTab === tab); button.setAttribute('aria-current', button.dataset.settingsTab === tab ? 'page' : 'false'); });
+  if (tab === 'network') refreshLearning().catch(error => { $('learning-status').textContent = error.message; });
 }
 function field(label, control) { const wrap = element('label', 'dynamic-field', label); wrap.append(control); return wrap; }
 function input(value = '', placeholder = '') { const control = element('input'); control.value = value; control.placeholder = placeholder; return control; }
@@ -45,7 +46,7 @@ function addBinding(binding = {}) {
   const endpoints = element('textarea', 'compact-textarea'); endpoints.dataset.field = 'endpoints'; endpoints.value = (binding.endpoints || []).map(r => `${r.method} ${r.path}`).join('\n'); endpoints.placeholder = 'POST /v1/chat/completions\nGET /v1/models';
   proxy.append(field('Allowed endpoints (optional)', endpoints));
   const help = element('p', 'field-help'); proxy.append(help);
-  const update = () => { proxy.hidden = mode.value !== 'proxy'; const route = row.querySelector('[data-field=route]').value || 'ROUTE'; help.textContent = `Requires restricted networking. Point the client at ${route.toUpperCase()}_BASE_URL; ${variable.value || 'YOUR_API_KEY'} receives a placeholder token. Empty endpoint rules allow all paths on this upstream.`; };
+  const update = () => { proxy.hidden = mode.value !== 'proxy'; const route = row.querySelector('[data-field=route]').value || 'ROUTE'; help.textContent = `Requires learning, restricted or approval networking. Point the client at ${route.toUpperCase()}_BASE_URL; ${variable.value || 'YOUR_API_KEY'} receives a placeholder token. Empty endpoint rules allow all paths on this upstream.`; };
   row.append(heading, first, field('Environment variable', variable), proxy);
   row.addEventListener('input', update); row.addEventListener('change', update); $('bindings-list').append(row); update();
 }
@@ -105,14 +106,19 @@ function conditionalFields() {
   $('provider-fields').hidden = !provider || harness !== 'kilo'; $('provider-direct').hidden = Boolean($('s-provider-route').value.trim()); $('s-model').disabled = provider;
   if (provider && $('s-provider-id').value && $('s-provider-model').value) $('s-model').value = `${$('s-provider-id').value.trim()}/${$('s-provider-model').value.trim()}`;
   const mode = $('s-network').value;
-  $('network-rules').hidden = !['restricted', 'approval'].includes(mode);
-  $('network-note').textContent = { unrestricted: 'The agent can reach the internet and local network. Filesystem restrictions still apply.', blocked: 'No network connections. Remote AI models will not work in this mode; use it for local boundary checks and offline commands.', restricted: 'Only allowed domains, credential routes and explicit ports are reachable. An empty rule set blocks outbound connections.', approval: 'New destinations wait for your decision in the dashboard. Allow once permits one connection; Allow for session remembers that exact host and port until the session ends. Deny blocks that destination for this session. Requests expire after 5 minutes. The runtime clock pauses while a decision is pending. Saved allow rules and credential routes proceed automatically; saved deny rules stay blocked. Direct TCP ports bypass these prompts. Unix sockets such as Docker still require separate sandbox permissions. Applies to new dashboard sessions.' }[mode] + (state.runtime?.proxyUnsupported ? ' This WSL2 kernel cannot enforce restricted or approval networking; choose Unrestricted or Blocked.' : '');
+  $('network-rules').hidden = !['learning', 'restricted', 'approval'].includes(mode);
+  $('network-learning').hidden = mode !== 'learning';
+  $('network-note').textContent = { unrestricted: 'The agent can reach the internet and local network. Filesystem restrictions still apply.', learning: 'New dashboard sessions use nono’s proxy to record HTTP(S) destinations. Saved deny rules still block. Allowed domains below are carried into the final allowlist but do not limit learning. Direct outbound port grants are unavailable because they bypass capture. Managed Git SSH destinations are not learned here. Run representative tasks, stop their sessions, then review and finish learning. Clients must honor HTTP_PROXY / HTTPS_PROXY.', blocked: 'No network connections. Remote AI models will not work in this mode; use it for local boundary checks and offline commands.', restricted: 'Only allowed domains, credential routes and explicit ports are reachable. An empty rule set blocks outbound connections.', approval: 'New destinations wait for your decision in the dashboard. Allow once permits one connection; Allow for session remembers that exact host and port until the session ends. Deny blocks that destination for this session. Requests expire after 5 minutes. The runtime clock pauses while a decision is pending. Saved allow rules and credential routes proceed automatically; saved deny rules stay blocked. Direct TCP ports bypass these prompts. Unix sockets such as Docker still require separate sandbox permissions. Applies to new dashboard sessions.' }[mode] + (state.runtime?.proxyUnsupported ? ' This WSL2 kernel cannot enforce learning, restricted or approval networking; choose Unrestricted or Blocked.' : '');
   $('storage-note').textContent = harness === 'kilo' ? ($('s-storage').value === 'shared' ? 'Uses your existing Kilo login, settings, session data and provider credentials. These files are readable and writable by this project’s agent.' : 'Creates separate config, data, cache and state directories. Existing Kilo login and providers are not copied. Supply provider credentials through secret bindings or configure this project’s Kilo storage.') : 'Claude Code and Codex CLI use the existing machine login and configuration supplied by their nono registry packs.';
 }
 function renderPolicySummary() {
   const record = state.policy; if (!record) return; const s = record.settings;
+  const preset = s.projectAccess === 'read' && s.network.mode === 'approval' ? 'review' : s.projectAccess === 'readwrite' ? ({ unrestricted: 'standard', learning: 'learning', approval: 'guided', restricted: 'restricted', blocked: 'offline' }[s.network.mode] || 'custom') : 'custom';
+  $('workspace-preset').value = preset; $('workspace-preset').disabled = false;
+  $('workspace-preset-status').textContent = s.network.mode === 'learning' ? 'Learning is active for new sessions. Review observed hosts before restricting.' : 'Selection saves immediately for new sessions. Running sessions keep their launch policy.';
+  $('workspace-review-learning').hidden = s.network.mode !== 'learning';
   const labels = { kilo: 'Kilo', claude: 'Claude Code', codex: 'Codex CLI' }; const selected = s.harness || 'kilo';
-  $('scope-summary').replaceChildren(...Object.entries({ 'Default agent': labels[selected], 'Selected project': s.projectAccess === 'read' ? 'Read only' : 'Read + write', 'Agent storage': s.storage === 'shared' ? 'Shared login & config' : 'Separate per project', 'Network': { unrestricted: 'Allowed', restricted: 'Restricted', approval: 'Ask on new destinations', blocked: 'Blocked' }[s.network.mode], 'Bound secrets': `${s.secrets.length} explicit bindings`, 'Run time limit': `${s.limits.timeoutMinutes} minutes`, 'Access escalation': 'Disabled' }).map(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', '', value)); return row; }));
+  $('scope-summary').replaceChildren(...Object.entries({ 'Default agent': labels[selected], 'Selected project': s.projectAccess === 'read' ? 'Read only' : 'Read + write', 'Agent storage': s.storage === 'shared' ? 'Shared login & config' : 'Separate per project', 'Network': { unrestricted: 'Allowed', learning: 'Learning destinations', restricted: 'Restricted', approval: 'Ask on new destinations', blocked: 'Blocked' }[s.network.mode], 'Bound secrets': `${s.secrets.length} explicit bindings`, 'Run time limit': `${s.limits.timeoutMinutes} minutes`, 'Access escalation': 'Disabled' }).map(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', '', value)); return row; }));
   $('scope-note').textContent = `Policy ${record.revision ? `revision ${record.revision}` : 'defaults'} · ${s.extraPaths.length} extra path grants. ${s.storage === 'shared' ? 'Includes the selected agent’s existing configuration and credentials.' : 'Existing machine credentials are not copied.'}`;
   $('settings-project').textContent = state.project; $('settings-revision').textContent = record.revision ? `Revision ${record.revision}` : 'Unsaved defaults';
   $('policy-preview').textContent = JSON.stringify(record.profile, null, 2); state.preview = record.profile;
@@ -129,6 +135,24 @@ async function loadProjectSettings(project) {
   if (project !== state.project) return;
   state.policy = policy; state.policyProject = project; state.vault = vault.secrets; fillSettings(policy.settings); clean(); renderPolicySummary(); $('save-settings').disabled = false;
   $('test-sandbox').disabled = false; updateLauncherHarness();
+  if (policy.settings.network.mode === 'learning') refreshLearning().catch(error => { $('learning-status').textContent = error.message; });
+}
+async function refreshLearning() {
+  if (state.policyProject !== state.project || state.policy?.settings.network.mode !== 'learning') {
+    $('learning-status').textContent = 'Save learning mode, then run representative sessions to collect destinations.';
+    $('learning-domains').replaceChildren(); $('finish-learning').disabled = true; return;
+  }
+  const project = state.project;
+  $('finish-learning').disabled = true;
+  $('learning-status').textContent = 'Loading observed destinations…';
+  const data = await api(`/api/network-learning?project=${encodeURIComponent(project)}`);
+  if (project !== state.project) return;
+  $('learning-domains').replaceChildren(...data.domains.map(domain => {
+    const label = element('label', 'checkbox-row'); const checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.value = domain.host; checkbox.checked = true;
+    const summary = element('span', '', domain.host); summary.append(element('small', '', `Ports ${domain.ports.join(', ')} · ${domain.allowed} allowed connections`)); label.append(checkbox, summary); return label;
+  }));
+  $('learning-status').textContent = `${data.sessions} learning session${data.sessions === 1 ? '' : 's'} · ${data.domains.length} observed host${data.domains.length === 1 ? '' : 's'}.${data.activeSessions ? ` Stop ${data.activeSessions} active session${data.activeSessions === 1 ? '' : 's'} before finishing.` : ''}${data.truncated ? ' Some trace data was truncated; run another session if a needed host is missing.' : ''}${!data.domains.length ? ' Finishing with no hosts blocks new outbound HTTP(S) destinations.' : ''}`;
+  $('finish-learning').disabled = Boolean(data.activeSessions);
 }
 async function refreshVault() {
   const [vault, audit] = await Promise.all([api('/api/secrets'), api('/api/audit')]); state.vault = vault.secrets;
@@ -154,7 +178,7 @@ function openSecret(secret) {
   $('secret-dialog-title').textContent = secret ? `Rotate ${secret.name}` : 'Add a secret'; $('secret-error').hidden = true; $('secret-dialog').showModal();
 }
 document.querySelectorAll('[data-settings-tab]').forEach(button => button.onclick = () => settingsTab(button.dataset.settingsTab));
-$('settings-form').addEventListener('input', dirty); $('settings-form').addEventListener('change', dirty);
+for (const eventName of ['input', 'change']) $('settings-form').addEventListener(eventName, event => { if (!event.target.closest('#network-learning')) dirty(); });
 $('s-network').addEventListener('change', conditionalFields); $('s-storage').addEventListener('change', conditionalFields); $('s-harness').addEventListener('change', conditionalFields);
 for (const id of ['s-git-enabled', 's-git-auth', 's-provider-enabled', 's-provider-id', 's-provider-model', 's-provider-route']) $(id).addEventListener('input', conditionalFields);
 $('add-grant').onclick = () => { addGrant(); dirty(); };
@@ -172,14 +196,52 @@ $('secret-form').addEventListener('submit', async event => {
 $('settings-form').addEventListener('submit', async event => {
   event.preventDefault(); if (state.policyProject !== state.project) return settingsError('Wait for this project’s settings to finish loading.');
   state.settingsSaving = true; $('save-settings').disabled = true; settingsError();
-  try { const record = await api('/api/project-settings', { project: state.project, revision: state.policy.revision, settings: captureSettings() }); state.policy = record; fillSettings(record.settings); clean(); renderPolicySummary(); toast(`Saved project policy revision ${record.revision}. Applies to new sessions.`); }
+  try { const record = await api('/api/project-settings', { project: state.project, revision: state.policy.revision, settings: captureSettings() }); state.policy = record; fillSettings(record.settings); clean(); renderPolicySummary(); if (record.settings.network.mode === 'learning') refreshLearning().catch(error => { $('learning-status').textContent = error.message; }); toast(`Saved project policy revision ${record.revision}. Applies to new sessions.`); }
   catch (error) { settingsError(error.message); } finally { state.settingsSaving = false; $('save-settings').disabled = false; }
 });
 $('discard-settings').onclick = async () => { try { await loadProjectSettings(state.project); toast('Draft discarded; loaded saved settings.'); } catch (e) { settingsError(e.message); } };
 $('apply-preset').onclick = () => {
-  const s = structuredClone(state.defaults); const preset = $('s-preset').value;
-  if (preset === 'review') s.projectAccess = 'read'; if (preset === 'offline') s.network.mode = 'blocked';
-  fillSettings(s); dirty(); toast('Preset loaded as a draft. Review the settings and save.');
+  try {
+    const s = captureSettings(), preset = $('s-preset').value;
+    s.projectAccess = preset === 'review' ? 'read' : 'readwrite';
+    if (preset === 'review') { s.extraPaths = s.extraPaths.map(grant => ({ ...grant, access: 'read' })); s.git.local = 'read'; s.git.fetch = false; s.git.push = false; s.git.authentication = 'none'; }
+    if (preset === 'offline') { s.git.fetch = false; s.git.push = false; s.git.authentication = 'none'; }
+    s.network.mode = { standard: 'unrestricted', learning: 'learning', guided: 'approval', review: 'approval', restricted: 'restricted', offline: 'blocked' }[preset];
+    s.network.connectPorts = [];
+    if (['standard', 'offline'].includes(preset)) s.network = { mode: s.network.mode, allowDomains: [], denyDomains: [], connectPorts: [], listenPorts: [] };
+    fillSettings(s); dirty(); refreshLearning().catch(error => { $('learning-status').textContent = error.message; });
+    toast('Preset loaded as a draft. Review the settings and save.');
+  } catch (error) { settingsError(error.message); }
+};
+$('workspace-preset').onchange = async () => {
+  const project = state.project, preset = $('workspace-preset').value;
+  if (state.policyProject !== project || state.settingsDirty || state.settingsSaving) {
+    if (state.policyProject === project) renderPolicySummary();
+    return toast('Save or discard the settings draft before changing the workspace preset.', true);
+  }
+  state.settingsSaving = true; $('workspace-preset').disabled = true; $('workspace-preset-status').textContent = 'Saving preset…';
+  try {
+    const record = await api('/api/project-preset', { project, preset, revision: state.policy.revision });
+    state.policy = record; fillSettings(record.settings); clean(); renderPolicySummary();
+    if (record.settings.network.mode === 'learning') refreshLearning().catch(error => { $('learning-status').textContent = error.message; });
+    toast(`Saved ${$('workspace-preset').selectedOptions[0].textContent} for new sessions.`);
+  } catch (error) {
+    try { await loadProjectSettings(project); } catch { renderPolicySummary(); }
+    $('workspace-preset-status').textContent = error.message;
+    toast(error.message, true);
+  } finally { state.settingsSaving = false; $('workspace-preset').disabled = false; }
+};
+$('workspace-review-learning').onclick = () => { showPage('settings'); settingsTab('network'); };
+$('refresh-learning').onclick = () => refreshLearning().catch(error => { $('learning-status').textContent = error.message; });
+$('finish-learning').onclick = async () => {
+  if (state.settingsDirty || state.settingsSaving) return settingsError('Save or discard the settings draft before finishing learning.');
+  $('finish-learning').disabled = true; settingsError();
+  try {
+    const domains = [...$('learning-domains').querySelectorAll('input:checked')].map(input => input.value);
+    const record = await api('/api/network-learning/finish', { project: state.project, revision: state.policy.revision, domains });
+    state.policy = record; fillSettings(record.settings); clean(); renderPolicySummary();
+    toast(`Saved restricted network policy revision ${record.revision}. New sessions block unlisted destinations.`);
+  } catch (error) { settingsError(error.message); $('finish-learning').disabled = false; }
 };
 $('validate-policy').onclick = async () => {
   settingsError(); $('validate-policy').disabled = true;
