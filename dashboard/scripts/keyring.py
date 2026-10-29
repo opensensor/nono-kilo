@@ -1,8 +1,20 @@
 #!/usr/bin/python3
 """Private stdin/stdout bridge to Linux Secret Service; never pass secrets in argv."""
 import json
+import os
 import re
 import sys
+
+def locked_message():
+    if os.path.exists('/proc/sys/fs/binfmt_misc/WSLInterop'):
+        return "In WSL, open Passwords and Keys (run seahorse), unlock the default keyring, then retry."
+    try:
+        with open('/proc/version', encoding='utf-8') as proc:
+            if 'microsoft' in proc.read().lower():
+                return "In WSL, open Passwords and Keys (run seahorse), unlock the default keyring, then retry."
+    except OSError:
+        pass
+    return "Unlock the default keyring in your desktop password manager, then retry."
 
 def main():
     import gi
@@ -15,8 +27,10 @@ def main():
     locked = collection.get_locked() if collection else True
     if request.get("action") == "status":
         return {"available": available, "locked": locked, "backend": "GNOME Keyring / Secret Service"}
-    if not available or locked:
-        return {"error": "Unlock the default keyring in your desktop password manager, then retry."}
+    if not available:
+        return {"error": "Secret Service has no default keyring. Create one in your desktop password manager, then retry."}
+    if locked:
+        return {"error": locked_message()}
     account = request.get("id", "")
     if not re.fullmatch(r"[a-f0-9]{32}", account):
         return {"error": "Invalid secret identifier."}

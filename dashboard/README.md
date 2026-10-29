@@ -39,6 +39,12 @@ packages are `python3-gi`, `gir1.2-secret-1` and `gnome-keyring`. Unlock the def
 collection with your desktop password manager. The app does not store secrets in
 plaintext when the keyring is unavailable.
 
+On WSL2, the Secret Service may start without a desktop login to unlock its
+`default` collection. Run `seahorse` in a graphical WSL terminal, open
+**Passwords and Keys**, unlock **default**, then choose **Refresh** on the
+dashboard's Secrets page. The keyring password is entered in Seahorse and is
+never sent to the dashboard. Existing sessions do not need a restart.
+
 ## Run at login
 
 Copy [the example user service](systemd/nono-kilo-dashboard.service.example) to

@@ -156,7 +156,8 @@ async function refreshLearning() {
 }
 async function refreshVault() {
   const [vault, audit] = await Promise.all([api('/api/secrets'), api('/api/audit')]); state.vault = vault.secrets;
-  $('keyring-status').textContent = vault.status.available && !vault.status.locked ? 'System keyring connected · unlocked' : vault.status.locked ? 'System keyring locked or unavailable' : 'System keyring unavailable';
+  $('keyring-status').textContent = vault.status.available && !vault.status.locked ? 'System keyring connected · unlocked' : vault.status.available ? 'Default keyring locked' : 'Secret Service unavailable';
+  $('keyring-help').textContent = vault.status.available && !vault.status.locked ? 'Values are write-only in this dashboard. Project files and exported profiles contain references only.' : vault.status.available && state.runtime?.wsl2 ? 'In WSL, run seahorse, unlock the default keyring in Passwords and Keys, then choose Refresh. The dashboard never needs the keyring password.' : vault.status.available ? 'Unlock the default keyring in your desktop password manager, then choose Refresh.' : 'Start a Secret Service keyring, then choose Refresh.';
   $('new-secret').disabled = !vault.status.available || vault.status.locked;
   $('vault-list').replaceChildren(...vault.secrets.map(secret => {
     const card = element('article', 'card secret-card'); const content = element('div');

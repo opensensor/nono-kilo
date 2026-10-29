@@ -194,7 +194,7 @@
     </div>
     <div class="content" id="secrets-content" hidden>
       <div class="page-heading"><div><div class="eyebrow">LOCAL CREDENTIALS</div><h1>Keys stay on your machine.</h1><p>Store once. Bind explicitly. Rotate without editing project files.</p></div><button class="button primary" id="new-secret">+ Add secret</button></div>
-      <div class="vault-status card"><span class="shield">◇</span><div><strong id="keyring-status">Checking system keyring…</strong><p>Values are write-only in this dashboard. Project files and exported profiles contain references only.</p></div></div>
+      <div class="vault-status card"><span class="shield">◇</span><div><strong id="keyring-status">Checking system keyring…</strong><p id="keyring-help">Values are write-only in this dashboard. Project files and exported profiles contain references only.</p></div></div>
       <div id="vault-list" class="vault-list"></div>
       <div class="notice">Disabling or rotating a secret affects new sessions. Stop existing sessions to end their current credential access. Log masking covers bound values and common encodings; it cannot prevent an agent from writing or transmitting an environment secret.</div>
       <div class="section-heading audit-heading"><h2>Recent configuration activity</h2><button class="text-button" id="refresh-vault">Refresh</button></div><div class="card" id="audit-list"></div>
