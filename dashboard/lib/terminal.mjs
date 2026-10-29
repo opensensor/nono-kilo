@@ -10,7 +10,7 @@ const { SerializeAddon } = serialization;
 const HIGH = 1024 * 1024, LOW = 128 * 1024;
 const active = status => ['starting', 'running', 'stopping'].includes(status);
 export function terminalSize(cols = 110, rows = 30) {
-  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 20 || cols > 300 || rows < 5 || rows > 120) throw new RequestError('Terminal size must be 20–300 columns and 5–120 rows.');
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 20 || cols > 600 || rows < 5 || rows > 240) throw new RequestError('Terminal size must be 20–600 columns and 5–240 rows.');
   return { cols, rows };
 }
 

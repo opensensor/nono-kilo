@@ -4,10 +4,10 @@ const harnessLabels = { kilo: 'Kilo', claude: 'Claude Code', codex: 'Codex CLI' 
 const displayScales = [100, 115, 130, 150];
 function setDisplayScale(value) {
   const size = displayScales.includes(Number(value)) ? Number(value) : 115;
-  document.documentElement.style.zoom = String(size / 100);
+  document.documentElement.style.setProperty('--display-scale', String(size / 100));
   $('display-scale').value = String(size);
   localStorage.setItem('opensensor.displayScale', String(size));
-  requestAnimationFrame(() => liveTerminal.fit());
+  requestAnimationFrame(() => liveTerminal.setDisplayScale(size / 100));
 }
 function updateLauncherHarness() {
   const harness = $('harness').value, native = harness !== 'kilo';

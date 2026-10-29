@@ -5,6 +5,7 @@ window.LiveTerminal = class LiveTerminal {
   constructor({ notice, onState }) {
     this.$ = id => document.getElementById(id); this.notice = notice; this.onState = onState;
     this.generation = 0; this.fontSize = Math.max(11, Math.min(22, Number(localStorage.getItem('opensensor.terminal.font')) || 14));
+    this.displayScale = 1.15;
     this.$('terminal-reconnect').onclick = () => this.connect(this.id);
     this.$('terminal-control').onclick = () => this.send({ type: 'control', takeover: true });
     this.$('terminal-release').onclick = () => this.send({ type: 'release' });
@@ -19,6 +20,13 @@ window.LiveTerminal = class LiveTerminal {
     this.$('terminal-paste').onclick = async () => { if (!this.controls) return; try { const text = await navigator.clipboard.readText(); if (text.length > 24000) throw new Error('Paste at most 24,000 characters at a time.'); this.term.paste(text); this.term.focus(); } catch (error) { this.notice(error.message || 'Use your browser’s paste shortcut.', true); } };
     this.$('terminal-smaller').onclick = () => this.zoom(-1); this.$('terminal-larger').onclick = () => this.zoom(1);
     this.$('terminal-bottom').onclick = () => this.term?.scrollToBottom();
+    this.$('terminal-surface').addEventListener('pointerenter', () => {
+      if (this.ready && this.remote?.interactive && ['starting', 'running'].includes(this.remote.status) && !this.remote.controller) this.send({ type: 'control' });
+    });
+    this.$('terminal-surface').addEventListener('pointerdown', () => {
+      if (!this.ready || !this.remote?.interactive || !['starting', 'running'].includes(this.remote.status) || this.controls) return;
+      this.notice(this.remote.controller ? 'Another tab has terminal control. Choose Take over control to click inside the agent.' : 'Taking terminal control. Click again when the status says You have control.', true);
+    });
     this.$('terminal-fullscreen').onclick = async () => {
       const panel = this.$('output-panel');
       if (panel.classList.contains('expanded')) { panel.classList.remove('expanded'); document.body.classList.remove('terminal-expanded'); }
@@ -43,7 +51,7 @@ window.LiveTerminal = class LiveTerminal {
     const host = document.createElement('div'); host.className = 'terminal-host';
     this.$('terminal-surface').replaceChildren(host);
     const openLink = (_event, uri) => { try { const url = new URL(uri); if (['http:', 'https:'].includes(url.protocol)) window.open(url.href, '_blank', 'noopener,noreferrer'); } catch {} };
-    const term = this.term = new Terminal({ cols: 110, rows: 30, cursorBlink: true, cursorStyle: 'bar', fontSize: this.fontSize,
+    const term = this.term = new Terminal({ cols: 110, rows: 30, cursorBlink: true, cursorStyle: 'bar', fontSize: Math.round(this.fontSize * this.displayScale),
       fontFamily: '"Cascadia Code", "SFMono-Regular", "Liberation Mono", monospace', lineHeight: 1.15, scrollback: 5000,
       allowProposedApi: true, screenReaderMode: true, scrollOnUserInput: true, linkHandler: { activate: openLink },
       theme: { background: '#12231d', foreground: '#d2e3d7', cursor: '#a8e8ba', selectionBackground: '#456c54', black: '#14271e', red: '#ed8c87', green: '#9cd5a2', yellow: '#e8d497', blue: '#95b7df', magenta: '#c9add9', cyan: '#8bd5cf', white: '#dceade', brightBlack: '#728a7b', brightWhite: '#ffffff' } });
@@ -95,12 +103,16 @@ window.LiveTerminal = class LiveTerminal {
     const generation = this.generation; this.term.paste(text);
     setTimeout(() => { if (generation === this.generation && this.input('\r')) { this.$('steering-input').value = ''; this.term.scrollToBottom(); } }, 60);
   }
-  zoom(delta) { this.fontSize = Math.max(11, Math.min(22, this.fontSize + delta)); localStorage.setItem('opensensor.terminal.font', this.fontSize); if (this.term) this.term.options.fontSize = this.fontSize; this.fit(); }
+  zoom(delta) { this.fontSize = Math.max(11, Math.min(22, this.fontSize + delta)); localStorage.setItem('opensensor.terminal.font', this.fontSize); this.setDisplayScale(this.displayScale); }
+  setDisplayScale(scale) { this.displayScale = scale; if (this.term) this.term.options.fontSize = Math.round(this.fontSize * scale); this.fit(); }
   fit() {
     clearTimeout(this.fitTimer); this.fitTimer = setTimeout(() => {
-      if (!this.term || !this.$('terminal-surface').clientWidth || !this.controls) return;
+      if (!this.term || !this.$('terminal-surface').clientWidth) return;
       const size = this.fitter.proposeDimensions(); if (!size) return;
-      const cols = Math.max(20, Math.min(300, size.cols)), rows = Math.max(5, Math.min(120, size.rows));
+      const cols = Math.max(20, Math.min(600, size.cols)), rows = Math.max(5, Math.min(240, size.rows));
+      // Completed sessions have no PTY to resize. Reflow the local saved screen
+      // so full screen can use the viewport without changing its archived size.
+      if (!this.controls) { if (this.remote && !['starting', 'running', 'stopping'].includes(this.remote.status)) this.term.resize(cols, rows); return; }
       if (cols !== this.remote?.cols || rows !== this.remote?.rows) { this.term.resize(cols, rows); this.send({ type: 'resize', cols, rows }); }
     }, 80);
   }
@@ -130,7 +142,7 @@ window.LiveTerminal = class LiveTerminal {
     this.$('terminal-stop').hidden = !running;
     this.$('terminal-stop').disabled = message.status === 'stopping';
     if (this.term && !this.controls && (this.term.cols !== message.cols || this.term.rows !== message.rows)) this.term.resize(message.cols, message.rows);
-    if (this.controls && !was) this.fit();
+    if ((this.controls && !was) || !running) this.fit();
     this.$('terminal-notice').textContent = running ? 'Closing or reconnecting this page leaves the session running. Stop ends the sandbox.' : 'This is the final terminal screen. The Transcript tab and Log download contain the captured output.';
     this.onState?.(this.id, message);
   }

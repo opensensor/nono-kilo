@@ -74,7 +74,7 @@ on `nono-kilo` through the dashboard, use a separate clone as the sandbox projec
 
 The **Session boundaries** card on the workspace has a quick preset selector. Selecting a preset saves a new project policy revision immediately for new sessions; active sessions keep their launch policy. The selector shows **Custom policy** when the saved file and network settings do not match a named preset. Existing agent and secret settings are retained, and incompatible combinations return a validation error without changing the saved policy. While learning is active, **Review learned hosts** opens the network review step in project settings. The **Restricted · saved allowlist** preset uses only domains already saved; it does not import observations from learning mode.
 
-Use **Display size** in the top bar to scale the dashboard from 100% to 150%. New browsers start at 115%; the choice is saved locally in that browser. The terminal refits after a size change.
+Use **Text size** in the top bar to enlarge dashboard text and terminal glyphs from 100% to 150%. New browsers start at 115%; the choice is saved locally in that browser. The terminal refits after a size change without changing mouse coordinates.
 | Environment | Inherited variable names and non-secret `NAME=value` settings |
 | Secret bindings | Environment injection or credential proxy with optional HTTP endpoint rules |
 | Limits & recovery | Deadline, memory cap, process/thread cap, GPU access, rollback snapshots and exclusions |
@@ -142,7 +142,7 @@ The network view retains up to 2,000 proxy events, 200 destinations and 900 conn
 
 In **Workspace**, choose an agent and **Interactive terminal**, then click **Start session**. An initial task is optional. This launches the selected CLI on a pseudo-terminal inside nono. Click the terminal to type and answer tool prompts. The steering composer sends follow-up text and Enter; **Ctrl+Enter** submits it. **Esc** and **Ctrl+C** send those keys; **Stop sandbox** terminates the run.
 
-**Focus view** fills the browser page while keeping browser tabs, the project sidebar and session tabs. **Select text** opens a stable, selectable snapshot. **Copy** copies the current selection, or the visible screen if nothing is selected. Hold **Shift** while dragging to select through Kilo’s mouse tracking; **Ctrl+Shift+C** copies without interrupting the process. Reconnect restores SGR mouse coordinates so TUI disclosure clicks keep working.
+**Focus view** fills the browser page while keeping browser tabs, the project sidebar and session tabs. **Select text** opens a stable, selectable snapshot. **Copy** copies the current selection, or the visible screen if nothing is selected. Hold **Shift** while dragging to select through Kilo’s mouse tracking; **Ctrl+Shift+C** copies without interrupting the process. Reconnect restores SGR mouse coordinates so TUI disclosure clicks keep working. If another tab controls the terminal, choose **Take over control** before clicking inside the agent.
 
 The terminal streams over an authenticated WebSocket with sequence tracking, render acknowledgements and bounded backpressure. WebGL accelerates rendering where available, with a DOM fallback. Resize the terminal’s bottom edge, zoom its font, search the screen/scrollback, copy selected text, paste, or go fullscreen. Fullscreen falls back to a page-filling layout when the browser disallows the native API. Terminal escape sequences cannot write to your clipboard or automatically open links.
 
